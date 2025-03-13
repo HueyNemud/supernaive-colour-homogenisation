@@ -196,9 +196,12 @@ for img in "$@"; do
   # done
 
   # Apply the color transformation to the image
+  # Out-of-gamut colors will be clamped to the nearest valid color
+  # Possible improvements: enable setting a ICC profile for a more accurate color transformation
   $convert "$img" -colorspace LAB \
     -color-matrix "${scale[0]} 0 0 0 ${scale[1]} 0 0 0 ${scale[2]}" \
     -set colorspace LAB -colorspace sRGB \
+    -clamp \
     -sigmoidal-contrast "$CONTRAST_ENHANCEMENT" \
     "output/$base_name"
 
