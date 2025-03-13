@@ -12,7 +12,7 @@ It may also be desirable to brighten them up and lighten the background evenly a
 
 ## How it works
 
-The general principle is to transform the colours of an image so that its background colour matches a target colour, while preserving as far as possible the differences between the colours in the image.
+The main idea is to transform the colors of an image so that its background matches a target color, while preserving the differences between colors within the image as much as possible.
 
 The process consists of three stages, summarised in the diagram below:
 
@@ -20,13 +20,13 @@ The process consists of three stages, summarised in the diagram below:
 
 Given an input image $I$ and a target background colour $t$:
 
-1. $I$ is quantised to extract a set $C$ of dominant colours from the image. and the colour $c^* = \arg\min_{c \in C} \| c - t \|_2$ is chosen as the background colour of the image;
-2. Colours of the image $I$ are rescaled by a factor $(\frac{t_{l}}{c^*_{l}},\frac{t_{a}}{c^*_{a}},\frac{t_{b}}{c^*_{b}})$;
+1. $I$ is quantised to extract a set $C$ of dominant colours from the image. and the colour $`c^* = \arg\min_{c \in C} \| c - t \|_2`$ is chosen as the background colour of the image;
+2. Colours of the image $I$ are rescaled by a factor $`(\frac{t_{l}}{c^*_{l}},\frac{t_{a}}{c^*_{a}},\frac{t_{b}}{c^*_{b}})`$ ;
 3. A sigmoïdal contrast enhancement is eventually applied to produce $I_h$ the final homogenized image. See [https://imagemagick.org/script/command-line-options.php?#sigmoidal-contrast](https://imagemagick.org/script/command-line-options.php?#sigmoidal-contrast) for more info.
 
 Notes:
 
-- calculations are made in the CIELAB colour space. The difference between two colours is the Euclidean distance between them: $d_E = \| .\|_2$.
+- calculations are made in the CIELAB colour space. The difference between two colours is the Euclidean distance between them: $`d_E = \| .\|_2`$.
 - Step 2 assumes that the background colour is dominant in the image. If not, a background colour can be set with the `--background-reference` option.
 
 ## Usage
