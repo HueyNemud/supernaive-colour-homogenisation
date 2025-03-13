@@ -5,10 +5,9 @@ Designed as a pre-processing for georeferencing old maps consisting of several s
 
 ## Motivations
 
-Many large scale historical maps are a compilation of multiple scans of individual sheets.
-Variations in light and ageing of the paper cause the background colour of the scanned images, i.e. the colour of the paper, to vary, resulting in an ugly patchwork effect when these sheets are put together to form the complete plan.
-In addition, the paper tends to yellow and the colours fade with time.
-It may also be desirable to brighten them up and lighten the background evenly across all the sheets so that they can be used as backgrounds for historical web maps.
+Many large historical maps are composed of several individual sheets.
+Because they are digitised separately, differences in lighting conditions and variations in the colour of the paper cause the background colour of the images to vary, resulting in an ugly patchwork effect when they are stitched to form the complete map.
+As the paper tends to yellow and the colours fade over time, it may also be desirable to lighten and brighten the background evenly across all the sheets so that the full map can be used in historical GIS.
 
 ## How it works
 
