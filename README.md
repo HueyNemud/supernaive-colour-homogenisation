@@ -27,7 +27,7 @@ Given an input image $I$ and a target background colour $t$:
 Notes:
 
 - calculations are made in the CIELAB colour space. The difference between two colours is the Euclidean distance between them: $`d_E = \| .\|_2`$.
-- Step 2 assumes that the background colour is dominant in the image. If not, a background colour can be set with the `--background-reference` option.
+- Step 1 assumes that the background colour is dominant in the image. If not, a background colour can be set with the `--background-reference` option.
 
 ## Usage
 
