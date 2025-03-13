@@ -20,7 +20,7 @@ The process consists of three stages, summarised in the diagram below:
 
 Given an input image $I$ and a target background colour $t$:
 
-1. $I$ is quantised to extract a set $C$ of dominant colours from the image. and the colour $`c^* = \arg\min_{c \in C} \| c - t \|_2`$ is chosen as the background colour of the image;
+1. $I$ is quantised to extract a set $C$ of dominant colours, then $`c^* = \arg\min_{c \in C} \| c - t \|_2`$ is chosen as the background colour of the image;
 2. Colours of the image $I$ are rescaled by a factor $`(\frac{t_{l}}{c^*_{l}},\frac{t_{a}}{c^*_{a}},\frac{t_{b}}{c^*_{b}})`$ ;
 3. A sigmoïdal contrast enhancement is eventually applied to produce $I_h$ the final homogenized image. See [https://imagemagick.org/script/command-line-options.php?#sigmoidal-contrast](https://imagemagick.org/script/command-line-options.php?#sigmoidal-contrast) for more info.
 
