@@ -61,3 +61,8 @@ Note: equalised images will be written to `./output/`
 ```bash
 ./equalisation.sh -c 5,70% -t 255,255,255 -v example/*.jpg
 ```
+
+## Additional thoughts
+
+1. CIELAB aims to be perceptually uniform, so scaling a color should ideally result in a similar perceptual shift. However, CIELAB isn't perfectly uniform, and [some areas show distortions](https://web.archive.org/web/20080705054344/http://www.aim-dtp.net/aim/evaluation/cie_de/index.htm). Although there are complex colour difference formulas to compensate, we use Euclidean distance because it is easy to compute and because historical maps often have washed-out, brownish colours which we hope are less affected by CIELAB distortions (notably affecting very dark and very saturated colours).
+2. ImageMagick clamps scaled colours that fall outside the sRGB gamut. This may result in colours being 'squashed' against the gamut edges when the scaling factor is large, especially if c∗c∗ and tt are far apart.
