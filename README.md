@@ -31,13 +31,6 @@ Notes:
 ## Usage
 
 [ImageMagick library](https://imagemagick.org/script/download.php) v6.x or higher is required.
-On Linux:
-
-```bash
-apt install imagemagick
-convert --version # Or `magick --version` if ImageMAgick >= 7.0
-# Should be at least 6.x
-```
 
 Tool usage:
 
