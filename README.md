@@ -30,7 +30,7 @@ Notes:
 
 ## Usage
 
-[ImageMagick library](https://imagemagick.org/script/download.php) v6.x or higher is required.
+[ImageMagick](https://imagemagick.org/script/download.php) v6.x or higher is required.
 
 Tool usage:
 
