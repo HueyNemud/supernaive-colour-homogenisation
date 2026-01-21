@@ -3,7 +3,7 @@
 set -e
 
 # The name of the convert command is passed as an argument. Default is convert.
-convert=$1 || convert="convert"
+convert=${1:-convert}
 
 function asvars() {
   echo $1 | tr "," " "
