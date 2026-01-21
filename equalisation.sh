@@ -30,9 +30,9 @@ Notes:
   - You need to have ImageMagick 6.x or above installed to run this script.
 '
 
-# ---
+# ---
 # Preliminary checks
-# ---
+# ---
 
 set -e
 
@@ -48,15 +48,15 @@ else
   convert="convert"
 fi
 
-# Include color utility functions from colour_util.sh
-source $(dirname $0)/colour_util.sh $convert
+# Include color utility functions from colorutil.sh
+source $(dirname $0)/colorutil.sh $convert
 
-# Create an output directory if it does not exist
+# Create an output directory if it does not exist
 mkdir -p output
 
-# ---
+# ---
 # CLI arguments parsing
-# ---
+# ---
 function display_help() {
   echo "Transform images so that their background color matches a target color." >&2
   echo "Usage: $0 [options] file1 [file2 ...]" >&2
@@ -117,16 +117,16 @@ while true; do
   esac
 done
 
-# If no files are provided, display help and exit immediately
+# If no files are provided, display help and exit immediately
 if [[ $# -eq 0 ]]; then
   display_help
 fi
 
-# ---
+# ---
 # Sanity checks and initialization
-# ---
+# ---
 
-# Create a function to parse a 'r,g,b' string into an array and check that the values are in the [0, 255] range
+# Create a function to parse a 'r,g,b' string into an array and check that the values are in the [0, 255] range
 function parse_rgb {
   IFS=',' read -r r g b <<<"$1"
   if [[ $r -lt 0 || $r -gt 255 || $g -lt 0 || $g -gt 255 || $b -lt 0 || $b -gt 255 ]]; then
@@ -141,7 +141,7 @@ IFS=' ' read -r -a target_bg <<<$(parse_rgb $TARGET_BACKGROUND_COLOR)
 IFS=' ' read -r -a target_bg_cielab <<<$(rgb2lab ${target_bg[@]})
 IFS=' ' read -r -a target_bg_cielab_norm <<<$(lab_norm ${target_bg_cielab[@]})
 
-# Try to parse the background reference color as an RGB triplet and convert it to CIELAB
+# Try to parse the background reference color as an RGB triplet and convert it to CIELAB
 IFS=' ' read -r -a bg_ref <<<$(parse_rgb $BACKGROUND_REFERENCE_COLOR)
 IFS=' ' read -r -a bg_ref_cielab <<<$(rgb2lab ${bg_ref[@]})
 
@@ -150,9 +150,9 @@ if [[ $VERBOSE == true ]]; then
   echo "Background reference color RGB(${bg_ref[@]}); CIELAB(${bg_ref_cielab[@]})"
 fi
 
-# ---
+# ---
 # Main processing loop
-# ---
+# ---
 
 for img in "$@"; do
   if [[ ! -f $img ]]; then
@@ -161,13 +161,22 @@ for img in "$@"; do
   fi
   base_name=$(basename $img)
 
-  # Find out the background color of the image.
-  # We first exact the dominant colors, and consider the closest one (in CIELAB) to the reference background color to be the actual background color of the image.
-  # All colors in the image are then transformed so this background color matches the target background color.
+  # Crop the image to remove a margin of $margin% around the image
+  #margin=30 # Example: 10%
+  #dimensions=$(identify -format "%wx%h" "$img")
+  #width=$(echo $dimensions | cut -d 'x' -f 1)
+  #height=$(echo $dimensions | cut -d 'x' -f 2)
+  #convert "$img" -shave $(($width * $margin / 100))x$(($height * $margin / 100)) /tmp/"$base_name"
 
+  #cropped="/tmp/$base_name"
+
+
+  # Find out the background color of the image.
+  # We first exact the dominant colors, and consider the closest one (in CIELAB) to the reference background color to be the actual background color of the image.
+  # All colors in the image are then transformed so this background color matches the target background color.
   IFS=' ' read -r -a image_bg <<<$(n_closest ${bg_ref_cielab[@]} $img $COLOR_QUANTIZATION)
 
-  # Normalize CIELAB values of the background color
+  # Normalize CIELAB values of the background color
   IFS=' ' read -r -a image_bg_norm <<<$(lab_norm ${image_bg[@]})
 
   scale=(1 1 1)
@@ -182,12 +191,12 @@ for img in "$@"; do
     fi
   done
 
-  # # DEBUG : save and transform the closest colors to the reference background color
+  # # DEBUG : save and transform the closest colors to the reference background color
   # # closest color is a list of 4*n elements, where n is the number of closest colors (in CIELAB space)
   # closest_colors_array=($(n_closest ${bg_ref_cielab[@]} $img $COLOR_QUANTIZATION))
   # for ((i = 0; i < ${#closest_colors_array[@]}; i += 4)); do
   #   $convert -size 100x100 xc:"lab(${closest_colors_array[i]},${closest_colors_array[i + 1]},${closest_colors_array[i + 2]})" color_$((i / 4)).jpg
-  #   # Apply the color transformation to small "color_$i.jpg" images
+  #   # Apply the color transformation to small "color_$i.jpg" images
   #   $convert "color_$((i / 4)).jpg" -colorspace LAB \
   #     -color-matrix "${scale[0]} 0 0 0 ${scale[1]} 0 0 0 ${scale[2]}" \
   #     -set colorspace LAB -colorspace sRGB \
@@ -195,9 +204,9 @@ for img in "$@"; do
   #     "color_t_$((i / 4)).jpg"
   # done
 
-  # Apply the color transformation to the image
+  # Apply the color transformation to the image
   # Out-of-gamut colors will be clamped to the nearest valid color
-  # Possible improvements: enable setting a ICC profile for a more accurate color transformation
+  # Possible improvements: enable setting a ICC profile for a more accurate color transformation
   $convert "$img" -colorspace LAB \
     -color-matrix "${scale[0]} 0 0 0 ${scale[1]} 0 0 0 ${scale[2]}" \
     -set colorspace LAB -colorspace sRGB \
