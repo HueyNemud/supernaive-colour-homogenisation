@@ -14,10 +14,10 @@ use homog::io::{Format, OutputOptions};
 use homog::layout::{Atlas, Seams};
 use homog::{process_file, Options};
 
-/// Homogenise the background of scanned map sheets: the paper colour of each sheet
-/// (estimated locally) is mapped to a target white by Bradford chromatic adaptation,
-/// preserving the other colours. Settings come from an optional `homog.toml` (-c), each
-/// overridden by the corresponding option. Georeferencing is kept.
+/// Not-So-Naive Map Colour Homogenisation: makes the paper of scanned map sheets white,
+/// evenly across each sheet and across adjacent sheets, while keeping the inks and washes.
+/// Settings come from an optional `homog.toml` (-c), each overridden by the corresponding
+/// option. Georeferencing is kept.
 #[derive(Parser)]
 #[command(version, args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
 struct Cli {

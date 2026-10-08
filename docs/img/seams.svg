@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="470" viewBox="0 0 820 470" font-family="Helvetica, Arial, sans-serif" font-size="13">
+  <rect width="820" height="470" fill="#fcfcfb"/>
+  <defs>
+    <pattern id="band" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <rect width="6" height="6" fill="#d6ecd9"/>
+      <line x1="0" y1="0" x2="0" y2="6" stroke="#3f9b52" stroke-width="1.2"/>
+    </pattern>
+    <linearGradient id="fadeA" x1="1" x2="0" y1="0" y2="0">
+      <stop offset="0" stop-color="#eda100" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#eda100" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="fadeB" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0" stop-color="#eda100" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#eda100" stop-opacity="0"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#52514e"/>
+    </marker>
+  </defs>
+
+  <!-- Sheets -->
+  <rect x="60" y="40" width="340" height="250" fill="#efe6cf" stroke="#8a8578" stroke-width="1.5"/>
+  <rect x="420" y="40" width="340" height="250" fill="#f3ead2" stroke="#8a8578" stroke-width="1.5"/>
+  <text x="70" y="62" fill="#0b0b0b" font-weight="bold">sheet A</text>
+  <text x="750" y="62" fill="#0b0b0b" font-weight="bold" text-anchor="end">sheet B</text>
+  <text x="70" y="282" fill="#52514e" font-size="11">extent = bounding box of its GCPs (on the neatline)</text>
+
+  <!-- Fading correction -->
+  <rect x="300" y="40" width="100" height="250" fill="url(#fadeA)"/>
+  <rect x="420" y="40" width="100" height="250" fill="url(#fadeB)"/>
+
+  <!-- Measurement bands -->
+  <rect x="380" y="40" width="14" height="250" fill="url(#band)"/>
+  <rect x="426" y="40" width="14" height="250" fill="url(#band)"/>
+  <!-- Segments along the edge -->
+  <g stroke="#3f9b52" stroke-width="1">
+    <line x1="376" y1="71" x2="398" y2="71"/><line x1="376" y1="102" x2="398" y2="102"/><line x1="376" y1="133" x2="398" y2="133"/>
+    <line x1="376" y1="165" x2="398" y2="165"/><line x1="376" y1="196" x2="398" y2="196"/><line x1="376" y1="227" x2="398" y2="227"/>
+    <line x1="376" y1="258" x2="398" y2="258"/>
+    <line x1="422" y1="71" x2="444" y2="71"/><line x1="422" y1="102" x2="444" y2="102"/><line x1="422" y1="133" x2="444" y2="133"/>
+    <line x1="422" y1="165" x2="444" y2="165"/><line x1="422" y1="196" x2="444" y2="196"/><line x1="422" y1="227" x2="444" y2="227"/>
+    <line x1="422" y1="258" x2="444" y2="258"/>
+  </g>
+
+  <!-- Shared edge -->
+  <line x1="410" y1="25" x2="410" y2="305" stroke="#e34948" stroke-width="2" stroke-dasharray="6 4"/>
+  <text x="410" y="18" fill="#e34948" text-anchor="middle">shared edge (same map coordinate in A and B)</text>
+
+  <!-- Callouts -->
+  <path d="M 433 150 C 520 150 560 120 600 120" fill="none" stroke="#52514e" stroke-width="1" marker-end="url(#arrow)" transform="translate(0,0)"/>
+  <text x="604" y="112" fill="#0b0b0b">measurement band</text>
+  <text x="604" y="128" fill="#52514e" font-size="11">starts beyond 2 × GCP RMS, 1 % wide;</text>
+  <text x="604" y="142" fill="#52514e" font-size="11">bare paper measured per segment (24)</text>
+  <path d="M 330 220 C 260 230 220 240 190 240" fill="none" stroke="#52514e" stroke-width="1" marker-end="url(#arrow)"/>
+  <text x="80" y="200" fill="#0b0b0b">extra gain, fading inwards</text>
+  <text x="80" y="216" fill="#52514e" font-size="11">brings the paper of the band to white</text>
+
+  <!-- Weight profile -->
+  <g transform="translate(60,340)">
+    <line x1="0" y1="90" x2="700" y2="90" stroke="#c9c8c2"/>
+    <line x1="350" y1="0" x2="350" y2="96" stroke="#e34948" stroke-dasharray="6 4"/>
+    <text x="-6" y="14" fill="#52514e" font-size="11" text-anchor="end">1</text>
+    <text x="-6" y="94" fill="#52514e" font-size="11" text-anchor="end">0</text>
+    <line x1="0" y1="10" x2="700" y2="10" stroke="#ecebe7"/>
+    <!-- A side: weight 1 up to band middle (327), squared ramp to 0 at 350-120=230 -->
+    <path d="M 0 90 L 230 90 Q 300 90 327 10 L 350 10" fill="none" stroke="#2a78d6" stroke-width="2.5"/>
+    <path d="M 350 10 L 373 10 Q 400 90 470 90 L 700 90" fill="none" stroke="#2a78d6" stroke-width="2.5"/>
+    <text x="355" y="-6" fill="#0b0b0b" font-size="12">weight of the seam gain across the edge</text>
+    <text x="230" y="108" fill="#52514e" font-size="11" text-anchor="middle">12 % of the sheet</text>
+    <text x="470" y="108" fill="#52514e" font-size="11" text-anchor="middle">12 % of the sheet</text>
+    <text x="327" y="108" fill="#3f9b52" font-size="11" text-anchor="end">band</text>
+  </g>
+</svg>

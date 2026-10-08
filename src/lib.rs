@@ -1,4 +1,5 @@
-//! Background colour homogenisation of scanned map sheets.
+//! Not-So-Naive Map Colour Homogenisation: white, seamless paper for scanned map sheets.
+//! See `docs/technical-report.md` for the model.
 //!
 //! Pipeline per image:
 //! 1. downsampled read -> Lab thumbnail;

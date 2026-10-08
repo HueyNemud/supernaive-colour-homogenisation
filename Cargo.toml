@@ -2,8 +2,8 @@
 name = "homog"
 version = "0.1.0"
 edition = "2024"
-description = "Background colour homogenisation of scanned map sheets"
-license = "Unlicense"
+description = "Not-So-Naive Map Colour Homogenisation: white, seamless paper for scanned map sheets, colours kept"
+license = "AGPL-3.0-or-later"
 
 [dependencies]
 anyhow = "1.0.104"
