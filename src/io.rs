@@ -92,7 +92,7 @@ impl Input {
     }
 
     /// Downsampled (box average) read of the RGB bands, with values in [0, 1].
-    /// Returns (width, height, reduction factor, pixels). Mirrors `thumbnail` of the prototype.
+    /// Returns (width, height, reduction factor, pixels).
     pub fn read_thumbnail(&self, max_side: usize) -> Result<(usize, usize, usize, Vec<[f32; 3]>)> {
         let s = self.width.max(self.height).div_ceil(max_side).max(1);
         let (tw, th) = (self.width / s, self.height / s);
@@ -174,7 +174,8 @@ fn last_gdal_error() -> String {
 }
 
 /// Output raster format.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Format {
     /// Same family as the input (TIFF -> TIFF, JPEG -> JPEG, PNG -> PNG, anything else -> TIFF)
     Auto,

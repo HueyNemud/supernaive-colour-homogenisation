@@ -38,6 +38,8 @@ pub struct Layout {
     to_pixel: Affine,
     to_map: Affine,
     pub rect: Rect,
+    /// RMS residual of the GCPs, in map units: how precisely the neatline is located
+    pub rms: f64,
 }
 
 /// 2-D affine transform fitted by least squares on centred coordinates (well conditioned).
@@ -73,7 +75,12 @@ impl Layout {
             ys.clone().fold(f64::INFINITY, f64::min),
             ys.fold(f64::NEG_INFINITY, f64::max),
         ];
-        Ok(Self { to_pixel: Affine::fit(&points, &pixels), to_map: Affine::fit(&pixels, &points), rect })
+        let to_map = Affine::fit(&pixels, &points);
+        let rms = (pixels.iter().zip(&points).map(|(p, q)| {
+            let m = to_map.apply(*p);
+            (m[0] - q[0]).powi(2) + (m[1] - q[1]).powi(2)
+        }).sum::<f64>() / gcps.len() as f64).sqrt();
+        Ok(Self { to_pixel: Affine::fit(&points, &pixels), to_map, rect, rms })
     }
 
     /// Map coordinates -> full-resolution pixel coordinates (continuous, 0 = left edge).
@@ -129,6 +136,9 @@ pub fn shared_edges(ri: &Rect, rj: &Rect) -> Vec<Edge> {
     edges
 }
 
+/// Layout of a sheet and the edges it shares with adjacent sheets.
+pub type Seams = (Layout, Vec<Edge>);
+
 /// Layout of a whole atlas: one `<image file name>.points` file per sheet in a directory.
 pub struct Atlas {
     sheets: HashMap<String, Layout>,
@@ -157,7 +167,7 @@ impl Atlas {
 
     /// Layout of the sheet stored as `file_name` and its edges shared with any other sheet of
     /// the atlas (whether or not it is processed in the same run).
-    pub fn seams(&self, file_name: &str) -> Option<(Layout, Vec<Edge>)> {
+    pub fn seams(&self, file_name: &str) -> Option<Seams> {
         let layout = self.sheets.get(file_name)?;
         let edges = self
             .sheets
@@ -188,6 +198,7 @@ mod tests {
         assert_eq!(gcps[0], [286.0, 208.0, -1600.0, 2600.0]);
         let layout = Layout::from_gcps(&gcps).unwrap();
         assert_eq!(layout.rect, [-1600.0, -1000.0, 2200.0, 2600.0]);
+        assert!(layout.rms < 1e-6, "exactly affine GCPs: rms {}", layout.rms);
         for g in &gcps {
             let px = layout.pixel([g[2], g[3]]);
             assert!((px[0] - g[0]).abs() < 1e-6 && (px[1] - g[1]).abs() < 1e-6, "{px:?} vs {g:?}");

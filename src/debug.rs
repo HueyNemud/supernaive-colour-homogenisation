@@ -3,8 +3,7 @@
 //! Written to `<dir>/`:
 //! - `1_original.png`: input (reduced);
 //! - `2_paper_surface.png`: estimated paper colour (flat-field);
-//! - `3_paper_pixels.png`: pixels used for the surface fit: green = bare paper (L* and a*b*),
-//!   orange = L* envelope only, grey = ignored (ink, strong washes, background);
+//! - `3_paper_pixels.png`: role of each pixel in the paper fit (see [`role_colour`]);
 //! - `4_gain_surface.png`: luminance gain of the surface correction (scale in `debug.txt`);
 //! - `5_gain_seams.png`: luminance gain of the seam correction, blue = darker, white = 1,
 //!   red = lighter (symmetric scale in `debug.txt`);
@@ -18,32 +17,14 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 
-use crate::background::{PaperSurface, PixelRole};
-use crate::color::{lab_to_srgb, linear_rgb_to_lab, linear_to_srgb, Vec3};
+use crate::background::PixelRole;
+use crate::color::{lab_to_srgb, linear_rgb_to_lab, linear_to_srgb};
 use crate::io::write_png;
-use crate::seams::{luminance_gain, EdgeField};
-use crate::transform::{Adapter, GainMap};
+use crate::seams::luminance_gain;
+use crate::transform::GainMap;
+use crate::{Analysis, Reduced};
 
-/// A reduced linear RGB image and its reduction factor w.r.t. the full resolution.
-pub struct Reduced<'a> {
-    pub width: usize,
-    pub height: usize,
-    pub factor: usize,
-    pub pixels: &'a [[f32; 3]],
-}
-
-pub struct DebugInput<'a> {
-    pub full_size: (usize, usize),
-    pub global_paper: Vec3,
-    pub thumb: Reduced<'a>,
-    pub surface: &'a PaperSurface,
-    pub surface_gains: &'a GainMap,
-    pub seams: Option<&'a EdgeField>,
-    pub medium: Reduced<'a>,
-    pub adapter: &'a Adapter,
-}
-
-fn srgb8(lin: [f64; 3]) -> [u8; 3] {
+pub fn srgb8(lin: [f64; 3]) -> [u8; 3] {
     lin.map(|c| (linear_to_srgb(c) * 255.0).round() as u8)
 }
 
@@ -69,80 +50,90 @@ fn luminance(g: &GainMap) -> Vec<f64> {
     g.data.iter().map(|v| luminance_gain(&v.map(|c| c as f64))).collect()
 }
 
-pub fn write(dir: &Path, d: &DebugInput) -> Result<()> {
+/// Colour of a thumbnail pixel by role in the paper fit, shaded by its lightness:
+/// green = bare paper (L* and a*b*), orange = L* envelope only, grey = ignored (ink, strong
+/// washes, `keep` colours), dark red = outside the sheet (scanner bed, colour charts).
+pub fn role_colour(role: PixelRole, linear: [f32; 3]) -> [u8; 3] {
+    let l = linear_rgb_to_lab(&linear.map(|c| c as f64))[0] / 100.0;
+    let (tint, k) = match role {
+        PixelRole::Chroma => ([40.0, 170.0, 60.0], 0.35 + 0.65 * l),
+        PixelRole::Lightness => ([240.0, 150.0, 30.0], 0.35 + 0.65 * l),
+        PixelRole::Other => ([255.0, 255.0, 255.0], 0.6 * l),
+        PixelRole::Background => ([150.0, 20.0, 40.0], 0.3 + 0.4 * l),
+    };
+    tint.map(|c: f64| (c * k) as u8)
+}
+
+/// Rendering of a reduced image with the final correction.
+pub fn result_image(a: &Analysis, img: &Reduced) -> Vec<[u8; 3]> {
+    img.pixels
+        .par_iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let s = img.factor as f64;
+            let px = [(((i % img.width) as f64 + 0.5) * s).min(a.width as f64), (((i / img.width) as f64 + 0.5) * s).min(a.height as f64)];
+            srgb8(a.adapter.adapt_point(px, p.map(|c| c as f64)))
+        })
+        .collect()
+}
+
+pub fn write(dir: &Path, a: &Analysis) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
-    let (t, m) = (&d.thumb, &d.medium);
+    let t = &a.thumb;
+    let m = a.medium.as_ref().context("debug images need the reduced image")?;
     let mut txt = String::new();
-    let g = d.global_paper;
-    writeln!(txt, "global paper Lab: ({:.2}, {:.2}, {:.2})", g[0], g[1], g[2])?;
+    let g = a.paper.global;
+    writeln!(txt, "global paper Lab: ({:.2}, {:.2}, {:.2}), a*b* spread {:.2}", g[0], g[1], g[2], a.paper.sd_ab())?;
+    match a.surface.degree {
+        Some(d) => writeln!(txt, "paper surface degree: {d}")?,
+        None => writeln!(txt, "single paper colour (no flat-field)")?,
+    }
 
     // 1. Original
     write_png(&dir.join("1_original.png"), m.width, m.height, &m.pixels.iter().map(|p| srgb8(p.map(|c| c as f64))).collect::<Vec<_>>())?;
 
     // 2. Paper surface
-    let surf: Vec<[u8; 3]> = d.surface.lab.iter().map(|lab| lab_to_srgb(lab).map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8)).collect();
+    let surf: Vec<[u8; 3]> = a.surface.lab.iter().map(|lab| lab_to_srgb(lab).map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8)).collect();
     write_png(&dir.join("2_paper_surface.png"), t.width, t.height, &surf)?;
-    let (lo, hi) = d.surface.lab.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| (lo.min(p[0]), hi.max(p[0])));
+    let (lo, hi) = a.paper_l_range();
     writeln!(txt, "paper surface L*: {lo:.1} .. {hi:.1}")?;
 
     // 3. Pixels used by the fit
-    let roles: Vec<[u8; 3]> = t
-        .pixels
-        .iter()
-        .zip(&d.surface.role)
-        .map(|(p, role)| {
-            let l = linear_rgb_to_lab(&p.map(|c| c as f64))[0] / 100.0;
-            let tint = match role {
-                PixelRole::Chroma => [40.0, 170.0, 60.0],
-                PixelRole::Lightness => [240.0, 150.0, 30.0],
-                PixelRole::Other => [255.0, 255.0, 255.0],
-            };
-            let k = if *role == PixelRole::Other { 0.6 * l } else { 0.35 + 0.65 * l };
-            tint.map(|c| (c * k) as u8)
-        })
-        .collect();
+    let roles: Vec<[u8; 3]> = t.pixels.iter().zip(&a.surface.role).map(|(p, r)| role_colour(*r, *p)).collect();
     write_png(&dir.join("3_paper_pixels.png"), t.width, t.height, &roles)?;
-    let count = |r: PixelRole| d.surface.role.iter().filter(|x| **x == r).count() as f64 / d.surface.role.len() as f64 * 100.0;
+    let count = |r: PixelRole| a.surface.role.iter().filter(|x| **x == r).count() as f64 / a.surface.role.len() as f64 * 100.0;
     writeln!(
         txt,
-        "fit pixels: bare paper {:.1} %, L* envelope only {:.1} %, ignored {:.1} %",
+        "pixels: bare paper {:.1} %, L* envelope only {:.1} %, ignored {:.1} %, outside the sheet {:.1} %",
         count(PixelRole::Chroma),
         count(PixelRole::Lightness),
-        count(PixelRole::Other)
+        count(PixelRole::Other),
+        count(PixelRole::Background)
     )?;
 
     // 4. Surface gain
-    let gs = luminance(d.surface_gains);
+    let gs = luminance(&a.surface_gains);
     let (gmin, gmax) = gs.iter().fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
     let span = (gmax - 1.0).max(1e-6);
     let img: Vec<[u8; 3]> = gs.iter().map(|v| sequential((v - 1.0) / span)).collect();
-    write_png(&dir.join("4_gain_surface.png"), d.surface_gains.width, d.surface_gains.height, &img)?;
+    write_png(&dir.join("4_gain_surface.png"), a.surface_gains.width, a.surface_gains.height, &img)?;
     writeln!(txt, "surface luminance gain: {gmin:.3} .. {gmax:.3} (image: black = 1.0, light yellow = {gmax:.3})")?;
 
     // 5. Seam gain (ratio of the final gains to the surface gains)
-    let total = luminance(d.adapter.gains());
-    let ratio: Vec<f64> = total.iter().zip(&gs).map(|(a, b)| a / b).collect();
+    let total = luminance(a.adapter.gains());
+    let ratio: Vec<f64> = total.iter().zip(&gs).map(|(x, y)| x / y).collect();
     let (rmin, rmax) = ratio.iter().fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
     // Symmetric scale covering the largest deviation, at least ±5 %
     let scale = (rmax - 1.0).max(1.0 - rmin).max(0.05);
     let img: Vec<[u8; 3]> = ratio.iter().map(|r| diverging((r - 1.0) / scale)).collect();
-    write_png(&dir.join("5_gain_seams.png"), d.surface_gains.width, d.surface_gains.height, &img)?;
+    write_png(&dir.join("5_gain_seams.png"), a.surface_gains.width, a.surface_gains.height, &img)?;
     writeln!(txt, "seam luminance gain: {rmin:.3} .. {rmax:.3} (image: blue = {:.3}, white = 1, red = {:.3})", 1.0 - scale, 1.0 + scale)?;
 
     // 7. Result (reduced), 6. with the seam samples
-    let (w, h) = d.full_size;
-    let result: Vec<[u8; 3]> = m
-        .pixels
-        .par_iter()
-        .enumerate()
-        .map(|(i, p)| {
-            let px = [((i % m.width) as f64 + 0.5) * m.factor as f64, ((i / m.width) as f64 + 0.5) * m.factor as f64];
-            srgb8(d.adapter.adapt_point([px[0].min(w as f64), px[1].min(h as f64)], p.map(|c| c as f64)))
-        })
-        .collect();
+    let result = result_image(a, m);
     write_png(&dir.join("7_result.png"), m.width, m.height, &result)?;
     let mut with_samples = result;
-    if let Some(field) = d.seams {
+    if let Some(field) = &a.seams {
         for &(px, paper) in &field.samples {
             let (x, y) = ((px[0] / m.factor as f64) as isize, (px[1] / m.factor as f64) as isize);
             if (0..m.width as isize).contains(&x) && (0..m.height as isize).contains(&y) {
@@ -150,6 +141,7 @@ pub fn write(dir: &Path, d: &DebugInput) -> Result<()> {
             }
         }
         let n_paper = field.samples.iter().filter(|s| s.1).count();
+        writeln!(txt, "seam band: {:.2} .. {:.2} map units from the edges", field.band.0, field.band.1)?;
         writeln!(txt, "seam samples: {} ({} taken as paper)", field.samples.len(), n_paper)?;
         for (name, gains) in field.describe() {
             let list: Vec<String> = gains.iter().map(|g| format!("{:+.1}", (g - 1.0) * 100.0)).collect();

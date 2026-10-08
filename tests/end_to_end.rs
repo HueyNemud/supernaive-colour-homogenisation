@@ -1,5 +1,6 @@
-//! End-to-end check on a synthetic 16-bit GeoTIFF sheet: yellowish paper with a
-//! strong illumination gradient, neutral ink lines and a blue wash.
+//! End-to-end checks on synthetic sheets: a 16-bit GeoTIFF with yellowish paper, a strong
+//! illumination gradient, neutral ink lines and a blue wash; colour hints (imagettes); white
+//! scanner bed with a colour chart; seams between adjacent sheets.
 
 use std::path::Path;
 
@@ -7,9 +8,55 @@ use gdal::raster::RasterCreationOptions;
 use gdal::spatial_ref::SpatialRef;
 use gdal::{Dataset, DriverManager};
 
+use homog::background::Lighting;
 use homog::color::{linear_rgb_to_lab, linear_to_srgb, srgb_to_linear, Vec3};
+use homog::hints::Hints;
 use homog::io::{Format, OutputOptions};
 use homog::{process_file, Options};
+
+fn options(lighting: Lighting, hints: Hints) -> Options {
+    Options {
+        target: [255, 255, 255],
+        lighting,
+        use_icc: true,
+        hints,
+        output: OutputOptions { format: Format::Tif, jpeg_quality: 95, tiff_compress: "NONE".into() },
+        debug: None,
+    }
+}
+
+fn temp_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("homog-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// 8-bit RGB GeoTIFF (or PNG, from the extension) from a linear RGB function of (x, y).
+fn write_rgb8(path: &Path, w: usize, h: usize, f: impl Fn(usize, usize) -> [f64; 3]) {
+    let mem = DriverManager::get_driver_by_name("MEM").unwrap().create_with_band_type::<u8, _>("", w, h, 3).unwrap();
+    for b in 0..3 {
+        let data: Vec<u8> = (0..w * h).map(|i| (linear_to_srgb(f(i % w, i / w)[b]) * 255.0).round() as u8).collect();
+        let mut buf = gdal::raster::Buffer::new((w, h), data);
+        mem.rasterband(b + 1).unwrap().write((0, 0), (w, h), &mut buf).unwrap();
+    }
+    let driver = if path.extension().is_some_and(|e| e == "png") { "PNG" } else { "GTiff" };
+    mem.create_copy(&DriverManager::get_driver_by_name(driver).unwrap(), path, &RasterCreationOptions::new()).unwrap();
+}
+
+fn read_lab8(path: &Path) -> (usize, Vec<Vec3>) {
+    let ds = Dataset::open(path).unwrap();
+    let w = ds.raster_size().0;
+    let bands: Vec<Vec<u8>> = (1..=3).map(|b| ds.rasterband(b).unwrap().read_band_as::<u8>().unwrap().into_shape_and_vec().1).collect();
+    let lab = (0..bands[0].len())
+        .map(|i| linear_rgb_to_lab(&[0, 1, 2].map(|c| srgb_to_linear(bands[c][i] as f64 / 255.0))))
+        .collect();
+    (w, lab)
+}
+
+fn lab_to_linear(lab: Vec3) -> [f64; 3] {
+    let srgb = homog::color::lab_to_srgb(&lab);
+    srgb.map(srgb_to_linear)
+}
 
 const W: usize = 600;
 const H: usize = 400;
@@ -63,22 +110,11 @@ fn read_lab(path: &Path) -> Vec<Vec3> {
         .collect()
 }
 
-fn run(flat_field: bool) -> (Vec<Vec3>, Dataset) {
-    let dir = std::env::temp_dir().join(format!("homog-e2e-{}-{flat_field}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+fn run(lighting: Lighting) -> (Vec<Vec3>, Dataset) {
+    let dir = temp_dir(&format!("e2e-{lighting:?}"));
     let (input, output) = (dir.join("in.tif"), dir.join("out.tif"));
     write_input(&input);
-    let opts = Options {
-        target: [255, 255, 255],
-        margin: 0.05,
-        flat_field,
-        degree: 3,
-        thumb_side: 400,
-        use_icc: true,
-        output: OutputOptions { format: Format::Tif, jpeg_quality: 95, tiff_compress: "DEFLATE".into() },
-        debug: None,
-    };
-    process_file(&input, &output, &opts, None).unwrap();
+    process_file(&input, &output, &options(lighting, Hints::default()), None).unwrap();
     (read_lab(&output), Dataset::open(&output).unwrap())
 }
 
@@ -99,7 +135,7 @@ fn paper_l_range(lab: &[Vec3]) -> (f64, f64) {
 
 #[test]
 fn flat_field_whitens_the_whole_sheet() {
-    let (lab, ds) = run(true);
+    let (lab, ds) = run(Lighting::Auto);
     let (lo, hi) = paper_l_range(&lab);
     assert!(lo > 97.0 && hi <= 100.0 + 1e-6, "paper L* in [{lo:.2}, {hi:.2}]");
 
@@ -122,7 +158,7 @@ fn flat_field_whitens_the_whole_sheet() {
 
 #[test]
 fn global_mode_leaves_illumination_gradient() {
-    let (lab, _) = run(false);
+    let (lab, _) = run(Lighting::None);
     let (lo, hi) = paper_l_range(&lab);
     // The 35 % light fall-off is not corrected by a single paper colour
     assert!(hi - lo > 10.0, "paper L* in [{lo:.2}, {hi:.2}]");
@@ -185,7 +221,7 @@ mod seams {
 
     #[test]
     fn seam_correction_whitens_the_paper_along_the_shared_edge() {
-        let dir = std::env::temp_dir().join(format!("homog-seams-{}", std::process::id()));
+        let dir = temp_dir("seams");
         let gcp = dir.join("gcp");
         std::fs::create_dir_all(&gcp).unwrap();
         let (west, east) = (dir.join("west.tif"), dir.join("east.tif"));
@@ -198,16 +234,7 @@ mod seams {
         let seams = atlas.seams("west.tif").unwrap();
         assert_eq!(seams.1.len(), 1, "one shared edge");
 
-        let opts = |out: &str| (dir.join(out), Options {
-            target: [255, 255, 255],
-            margin: 0.05,
-            flat_field: true,
-            degree: 3,
-            thumb_side: 400,
-            use_icc: true,
-            output: OutputOptions { format: Format::Tif, jpeg_quality: 95, tiff_compress: "NONE".into() },
-            debug: None,
-        });
+        let opts = |out: &str| (dir.join(out), options(Lighting::Auto, Hints::default()));
         let (plain, o1) = opts("plain.tif");
         let (seamed, o2) = opts("seamed.tif");
         process_file(&west, &plain, &o1, None).unwrap();
@@ -221,5 +248,98 @@ mod seams {
         // Far from the seam, nothing changes
         let (mid_before, mid_after) = (paper_l(&plain, 200, 300), paper_l(&seamed, 200, 300));
         assert!((mid_after - mid_before).abs() < 0.05, "centre: {mid_before:.2} vs {mid_after:.2}");
+    }
+}
+
+/// A pale yellow body colour (gouache) covering 70 % of the sheet, slightly lighter and
+/// yellower than the paper: the automatic estimate, which looks for the lightest dominant
+/// colour, takes it for the paper.
+mod hints {
+    use super::*;
+
+    const SW: usize = 400;
+    const SH: usize = 300;
+    const PAPER: Vec3 = [80.0, 1.0, 14.0];
+    const WASH: Vec3 = [82.0, 2.0, 21.0];
+
+    fn in_wash(x: usize, y: usize) -> bool {
+        (30..370).contains(&x) && (20..280).contains(&y)
+    }
+
+    fn sheet(x: usize, y: usize) -> [f64; 3] {
+        if x % 40 == 20 || y % 40 == 20 {
+            [0.02; 3] // ink lines
+        } else if in_wash(x, y) {
+            lab_to_linear(WASH)
+        } else {
+            lab_to_linear(PAPER)
+        }
+    }
+
+    /// Mean output Lab of the wash and of the paper (away from the ink lines).
+    fn run(name: &str, hints: Hints) -> (Vec3, Vec3) {
+        let dir = temp_dir(name);
+        let (input, output) = (dir.join("in.tif"), dir.join("out.tif"));
+        write_rgb8(&input, SW, SH, sheet);
+        process_file(&input, &output, &options(Lighting::Auto, hints), None).unwrap();
+        let (w, lab) = read_lab8(&output);
+        let mean = |pred: &dyn Fn(usize, usize) -> bool| {
+            let sel: Vec<&Vec3> = lab
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| {
+                    let (x, y) = (i % w, i / w);
+                    (x % 40).abs_diff(20) > 2 && (y % 40).abs_diff(20) > 2 && pred(x, y)
+                })
+                .map(|(_, p)| p)
+                .collect();
+            [0, 1, 2].map(|c| sel.iter().map(|p| p[c]).sum::<f64>() / sel.len() as f64)
+        };
+        (mean(&|x, y| in_wash(x, y) && (100..300).contains(&x)), mean(&|x, _| !(25..=375).contains(&x)))
+    }
+
+    fn imagette(dir: &Path, colour: Vec3) -> std::path::PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        write_rgb8(&dir.join("sample.png"), 24, 24, |_, _| lab_to_linear(colour));
+        dir.to_owned()
+    }
+
+    #[test]
+    fn imagettes_fix_a_wash_taken_for_paper() {
+        // Without hints the wash becomes white
+        let (wash, _) = run("hints-none", Hints::default());
+        assert!(wash[1].hypot(wash[2]) < 2.0, "wash without hints {wash:?}");
+
+        // `keep` imagette of the wash: the paper is found, the wash keeps its yellow
+        let dir = temp_dir("hints-imagettes");
+        let keep = Hints::load(None, Some(&imagette(&dir.join("keep"), WASH))).unwrap();
+        let (wash, paper) = run("hints-keep", keep);
+        assert!(paper[1].hypot(paper[2]) < 1.0 && paper[0] > 98.0, "paper with keep {paper:?}");
+        assert!(wash[2] > 4.0, "wash with keep {wash:?}");
+
+        // `paper` imagette instead: same result
+        let paper_hint = Hints::load(Some(&imagette(&dir.join("paper"), PAPER)), None).unwrap();
+        let (wash, paper) = run("hints-paper", paper_hint);
+        assert!(paper[1].hypot(paper[2]) < 1.0 && paper[0] > 98.0, "paper with paper hint {paper:?}");
+        assert!(wash[2] > 4.0, "wash with paper hint {wash:?}");
+    }
+
+    #[test]
+    fn white_scanner_bed_and_colour_chart_are_ignored() {
+        let dir = temp_dir("bed");
+        let (input, output) = (dir.join("in.tif"), dir.join("out.tif"));
+        write_rgb8(&input, SW, SH, |x, y| {
+            if (50..350).contains(&x) && (40..260).contains(&y) {
+                if x % 40 == 20 { [0.02; 3] } else { lab_to_linear(PAPER) }
+            } else if x < 40 && y < 30 {
+                lab_to_linear([50.0, if x < 20 { 60.0 } else { -50.0 }, 30.0]) // colour chart
+            } else {
+                lab_to_linear([97.0, 0.0, 0.0]) // scanner bed
+            }
+        });
+        process_file(&input, &output, &options(Lighting::Auto, Hints::default()), None).unwrap();
+        let (w, lab) = read_lab8(&output);
+        let p = lab[150 * w + 200];
+        assert!(p[0] > 98.0 && p[1].hypot(p[2]) < 1.0, "paper {p:?}");
     }
 }

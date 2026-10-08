@@ -1,9 +1,11 @@
-//! Paper (background) estimation on a low-resolution Lab thumbnail.
-//! Mirrors `paper_global` and `paper_poly` of `proto/homog_proto.py`.
+//! Paper (background) estimation on a low-resolution Lab thumbnail: paper colour model
+//! (automatic, or from `paper` imagettes), content mask, and smooth paper surface.
 
+use anyhow::{bail, Result};
 use rayon::prelude::*;
 
 use crate::color::Vec3;
+use crate::hints::{ColourModel, Hints, MATCH_RADIUS};
 
 /// Row-major Lab thumbnail.
 pub struct LabImage {
@@ -33,34 +35,169 @@ fn ab_dist(p: &Vec3, q: &Vec3) -> f64 {
     ((p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt()
 }
 
-/// Robust global paper colour: median Lab of the bright, paper-chroma pixels
-/// of the central region (`margin` = border fraction ignored on each side).
-pub fn paper_global(img: &LabImage, margin: f64) -> Vec3 {
-    let (w, h) = (img.width, img.height);
-    let (mw, mh) = ((w as f64 * margin) as usize, (h as f64 * margin) as usize);
-    let central: Vec<Vec3> = (mh..h - mh)
-        .flat_map(|y| (mw..w - mw).map(move |x| y * w + x))
-        .map(|i| img.data[i])
-        .collect();
-    let mut ls: Vec<f64> = central.iter().map(|p| p[0]).collect();
-    let lo = percentile(&mut ls, 75.0);
-    let hi = percentile(&mut ls, 98.0);
-    let sel: Vec<Vec3> = central.into_iter().filter(|p| p[0] >= lo && p[0] <= hi).collect();
-    let ab_med = [0.0, median(sel.iter().map(|p| p[1]).collect()), median(sel.iter().map(|p| p[2]).collect())];
-    let sel: Vec<Vec3> = sel.into_iter().filter(|p| ab_dist(p, &ab_med) < 6.0).collect();
-    median3(&sel)
+/// How uneven the lighting of the scans is, i.e. how flexible the paper surface is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Lighting {
+    /// Degree chosen per sheet by spatial cross-validation
+    Auto,
+    /// Degree 2
+    Even,
+    /// Degree 4
+    Uneven,
+    /// Single paper colour per sheet (no flat-field)
+    None,
 }
 
-/// Pixels loosely compatible with the global paper colour (excludes ink, strong
-/// washes and the scanner background).
-fn paper_candidates(img: &LabImage, global: &Vec3) -> Vec<usize> {
-    (0..img.data.len())
-        .filter(|&i| {
-            let p = &img.data[i];
-            let dl = p[0] - global[0];
-            ab_dist(p, global) < 8.0 && dl > -15.0 && dl < 10.0
+/// Floor of the a*b* spread of the automatic paper model: paper within 8 Δab of the
+/// estimated colour is always accepted.
+const AUTO_MIN_SD_AB: f64 = 8.0 / MATCH_RADIUS;
+
+/// Automatic paper colour: the bright pixels (75th-98th percentile of L*) with the dominant
+/// chroma, among `pixels` (content, not matching a `keep` hint).
+fn auto_paper(pixels: Vec<Vec3>) -> Option<ColourModel> {
+    if pixels.len() < 50 {
+        return None;
+    }
+    let mut ls: Vec<f64> = pixels.iter().map(|p| p[0]).collect();
+    let lo = percentile(&mut ls, 75.0);
+    let hi = percentile(&mut ls, 98.0);
+    let sel: Vec<Vec3> = pixels.into_iter().filter(|p| p[0] >= lo && p[0] <= hi).collect();
+    let ab_med = [0.0, median(sel.iter().map(|p| p[1]).collect()), median(sel.iter().map(|p| p[2]).collect())];
+    let sel: Vec<Vec3> = sel.into_iter().filter(|p| ab_dist(p, &ab_med) < 6.0).collect();
+    ColourModel::from_pixels(&sel, AUTO_MIN_SD_AB)
+}
+
+fn delta_e(p: &Vec3, q: &Vec3) -> f64 {
+    ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt()
+}
+
+/// 4-connected flood fill from `seeds` through the pixels where `inside` holds.
+fn flood(w: usize, h: usize, seeds: impl IntoIterator<Item = usize>, inside: impl Fn(usize) -> bool) -> Vec<bool> {
+    let mut reached = vec![false; w * h];
+    let mut stack: Vec<usize> = seeds.into_iter().collect();
+    while let Some(i) = stack.pop() {
+        if reached[i] || !inside(i) {
+            continue;
+        }
+        reached[i] = true;
+        let (x, y) = (i % w, i / w);
+        if x > 0 {
+            stack.push(i - 1);
+        }
+        if x + 1 < w {
+            stack.push(i + 1);
+        }
+        if y > 0 {
+            stack.push(i - w);
+        }
+        if y + 1 < h {
+            stack.push(i + w);
+        }
+    }
+    reached
+}
+
+/// Pixels of the sheet, and the colour of the scanner bed if one was found. The bed is the
+/// uniform colour touching the image border: it is flood-filled from the border, then only
+/// the largest remaining region (the sheet) is kept, which also drops colour charts or rulers
+/// lying on the bed. If the "bed" covers most of the image, the scan is cropped to the map
+/// and everything is content.
+pub fn content_mask(img: &LabImage) -> (Vec<bool>, Option<Vec3>) {
+    let (w, h) = (img.width, img.height);
+    let border: Vec<usize> = (0..w).flat_map(|x| [x, (h - 1) * w + x]).chain((0..h).flat_map(|y| [y * w, y * w + w - 1])).collect();
+    let bed = median3(&border.iter().map(|&i| img.data[i]).collect::<Vec<_>>());
+    let background = flood(w, h, border, |i| delta_e(&img.data[i], &bed) < 15.0);
+    if background.iter().filter(|&&b| b).count() * 10 > w * h * 6 {
+        return (vec![true; w * h], None);
+    }
+    // Largest connected region of the rest (single-pass labelling)
+    let mut label = vec![usize::MAX; w * h];
+    let mut best = (0, usize::MAX);
+    let mut stack = Vec::new();
+    for start in 0..w * h {
+        if background[start] || label[start] != usize::MAX {
+            continue;
+        }
+        let mut size = 0;
+        stack.push(start);
+        label[start] = start;
+        while let Some(i) = stack.pop() {
+            size += 1;
+            let (x, y) = (i % w, i / w);
+            let neighbours = [(x > 0).then(|| i - 1), (x + 1 < w).then(|| i + 1), (y > 0).then(|| i - w), (y + 1 < h).then(|| i + w)];
+            for j in neighbours.into_iter().flatten() {
+                if !background[j] && label[j] == usize::MAX {
+                    label[j] = start;
+                    stack.push(j);
+                }
+            }
+        }
+        if size > best.0 {
+            best = (size, start);
+        }
+    }
+    (label.iter().map(|&l| l == best.1).collect(), Some(bed))
+}
+
+/// Paper of a sheet: reference colour models (automatic estimate or `paper` imagettes),
+/// global paper colour and content mask.
+pub struct PaperModel {
+    pub global: Vec3,
+    pub content: Vec<bool>,
+    refs: Vec<ColourModel>,
+}
+
+impl PaperModel {
+    pub fn estimate(img: &LabImage, hints: &Hints) -> Result<Self> {
+        let usable = |mask: &dyn Fn(usize) -> bool| -> Vec<Vec3> {
+            (0..img.data.len()).filter(|&i| mask(i) && !hints.keeps(&img.data[i])).map(|i| img.data[i]).collect()
+        };
+        let (mut content, bed) = content_mask(img);
+        // A "bed" of the paper colour is paper touching the image border (scan cropped to the
+        // map, cells closed by ink lines): no background then
+        let is_paper = |bed: &Vec3, paper: &Vec3| delta_e(bed, paper) < 10.0;
+        if hints.paper.is_empty() {
+            let auto = |content: &[bool]| auto_paper(usable(&|i| content[i]));
+            let Some(mut model) = auto(&content) else { bail!("no paper found: provide `paper` imagettes") };
+            if bed.is_some_and(|b| is_paper(&b, &model.mean)) {
+                content = vec![true; img.data.len()];
+                model = auto(&content).expect("more pixels than before");
+            }
+            return Ok(Self { global: model.mean, content, refs: vec![model] });
+        }
+        if bed.is_some_and(|b| hints.paper.iter().any(|m| is_paper(&b, &m.mean))) {
+            content = vec![true; img.data.len()];
+        }
+        // Imagettes: global colour = median of the matching pixels
+        let mut model = Self { global: hints.paper[0].mean, content, refs: hints.paper.clone() };
+        let matching: Vec<Vec3> = usable(&|i| model.content[i]).into_iter().filter(|p| model.accepts(p)).collect();
+        if matching.len() < 50 {
+            bail!("the `paper` imagettes match almost no pixel of the sheet");
+        }
+        model.global = median3(&matching);
+        Ok(model)
+    }
+
+    /// Whether a colour is compatible with one of the paper references (any lighting).
+    pub fn accepts(&self, lab: &Vec3) -> bool {
+        self.refs.iter().any(|m| {
+            let dl = lab[0] - m.mean[0];
+            m.distance_ab(lab) < MATCH_RADIUS && dl > -(3.0 * m.sd_l).max(15.0) && dl < (2.0 * m.sd_l).max(10.0)
         })
-        .collect()
+    }
+
+    /// Largest a*b* spread of the paper references.
+    pub fn sd_ab(&self) -> f64 {
+        self.refs.iter().map(|m| m.sd_ab).fold(0.0, f64::max)
+    }
+
+    /// Indices of the pixels used to fit the paper surface.
+    fn candidates(&self, img: &LabImage, hints: &Hints) -> Vec<usize> {
+        (0..img.data.len())
+            .filter(|&i| self.content[i] && self.accepts(&img.data[i]) && !hints.keeps(&img.data[i]))
+            .collect()
+    }
 }
 
 /// Monomials x^i y^j (i + j <= degree) of the pixel centre, coordinates normalised to [-1, 1].
@@ -132,7 +269,9 @@ pub(crate) fn eval(beta: &[f64], xi: &[f64]) -> f64 {
 /// What a thumbnail pixel was used for in the paper surface fit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PixelRole {
-    /// Not compatible with the paper colour (ink, strong wash, background)
+    /// Outside the sheet (scanner bed, colour chart...)
+    Background,
+    /// Not compatible with the paper colour (ink, strong wash) or matching a `keep` hint
     Other,
     /// Used for the L* envelope only
     Lightness,
@@ -140,52 +279,117 @@ pub enum PixelRole {
     Chroma,
 }
 
-/// Paper surface: one Lab value per thumbnail pixel, and the role of each pixel in the fit.
+/// Paper surface: one Lab value per thumbnail pixel, the role of each pixel in the fit and
+/// the polynomial degree.
 pub struct PaperSurface {
     pub lab: Vec<Vec3>,
     pub role: Vec<PixelRole>,
+    pub degree: Option<usize>,
 }
 
-/// Paper map as smooth polynomial surfaces of the given degree, robust to large washes.
-/// Mirrors `paper_poly` of the prototype.
+/// Envelope quantile and IRLS settings
+const TAU: f64 = 0.8;
+const NEAR: f64 = 4.0;
+const C_AB: f64 = 3.0;
+
+fn n_terms(degree: usize) -> usize {
+    (degree + 1) * (degree + 2) / 2
+}
+
+/// Upper-envelope fit of `l` (quantile regression, quantile TAU) by IRLS.
+fn fit_envelope(x: &[f64], k: usize, l: &[[f64; 1]], iterations: usize) -> Vec<f64> {
+    let mut wt = vec![1.0; l.len()];
+    let mut beta = Vec::new();
+    for _ in 0..=iterations {
+        [beta] = weighted_lstsq(x, k, l, &wt);
+        for ((xi, li), wi) in x.chunks_exact(k).zip(l).zip(wt.iter_mut()) {
+            let r = li[0] - eval(&beta, xi);
+            *wi = if r > 0.0 { TAU } else { 1.0 - TAU } / r.abs().max(0.05);
+        }
+    }
+    beta
+}
+
+fn pinball(r: f64) -> f64 {
+    if r > 0.0 { TAU * r } else { (TAU - 1.0) * r }
+}
+
+/// Degree of the paper surface for `lighting = auto`: spatial 4-fold cross-validation of the
+/// envelope fit (folds = interleaved blocks of a 4 x 4 grid), smallest degree whose held-out
+/// quantile loss is within 1 % of the best. A stiffer surface protects the washes.
+pub fn select_degree(img: &LabImage, cand: &[usize]) -> usize {
+    const DEGREES: std::ops::RangeInclusive<usize> = 1..=5;
+    let (w, h) = (img.width, img.height);
+    let step = (cand.len() / 20_000).max(1);
+    let pts: Vec<usize> = cand.iter().step_by(step).copied().collect();
+    let fold = |i: usize| {
+        let (bx, by) = ((i % w) * 4 / w, (i / w) * 4 / h);
+        (bx % 2) + 2 * (by % 2)
+    };
+    let losses: Vec<f64> = DEGREES
+        .into_par_iter()
+        .map(|d| {
+            let k = n_terms(d);
+            let mut row = vec![0.0; k];
+            let (mut loss, mut n) = (0.0, 0.0);
+            for f in 0..4 {
+                let (train, test): (Vec<usize>, Vec<usize>) = pts.iter().partition(|&&i| fold(i) != f);
+                if train.len() < 20 * k || test.is_empty() {
+                    continue;
+                }
+                let x: Vec<f64> = train
+                    .iter()
+                    .flat_map(|&i| {
+                        monomials(i % w, i / w, w, h, d, &mut row);
+                        row.clone()
+                    })
+                    .collect();
+                let l: Vec<[f64; 1]> = train.iter().map(|&i| [img.data[i][0]]).collect();
+                let beta = fit_envelope(&x, k, &l, 15);
+                for &i in &test {
+                    monomials(i % w, i / w, w, h, d, &mut row);
+                    loss += pinball(img.data[i][0] - eval(&beta, &row));
+                    n += 1.0;
+                }
+            }
+            if n > 0.0 { loss / n } else { f64::INFINITY }
+        })
+        .collect();
+    let best = losses.iter().copied().fold(f64::INFINITY, f64::min);
+    DEGREES.zip(&losses).find(|(_, l)| **l <= best * 1.01).map_or(3, |(d, _)| d)
+}
+
+/// Paper surface: smooth polynomial surfaces of the given degree (None: single colour),
+/// robust to large washes.
 ///
 /// Bare paper is the lightest material (a transparent wash or ink can only darken it):
 /// - L*: upper-envelope fit, i.e. quantile regression (80 %) by iteratively reweighted
-///   least squares, over the pixels loosely compatible with the global paper colour;
+///   least squares, over the pixels compatible with the paper model;
 /// - a*, b*: least squares with Tukey reweighting (cut-off 3 Δab units, starting from the
 ///   global paper chroma) over the pixels at most 4 L* units below the envelope, so that
 ///   washes do not contribute.
 ///
 /// A low-degree surface cannot follow a wash patch, however large.
-pub fn paper_surface(img: &LabImage, global: Vec3, degree: usize) -> PaperSurface {
-    const TAU: f64 = 0.8;
-    const NEAR: f64 = 4.0;
-    const C_AB: f64 = 3.0;
+pub fn paper_surface(img: &LabImage, paper: &PaperModel, hints: &Hints, degree: Option<usize>) -> PaperSurface {
     let (w, h) = (img.width, img.height);
-    let k = (degree + 1) * (degree + 2) / 2;
-    let mut role = vec![PixelRole::Other; w * h];
-    let fallback = |role| PaperSurface { lab: vec![global; w * h], role };
+    let global = paper.global;
+    let cand = paper.candidates(img, hints);
+    let mut role: Vec<PixelRole> =
+        paper.content.iter().map(|&c| if c { PixelRole::Other } else { PixelRole::Background }).collect();
+    cand.iter().for_each(|&i| role[i] = PixelRole::Lightness);
+    let flat = |role| PaperSurface { lab: vec![global; w * h], role, degree: None };
+    let Some(degree) = degree else { return flat(role) };
+    let k = n_terms(degree);
+    if cand.len() < 20 * k {
+        return flat(role);
+    }
 
     let mut design = vec![0.0; w * h * k];
     design.par_chunks_exact_mut(k).enumerate().for_each(|(i, row)| monomials(i % w, i / w, w, h, degree, row));
     let rows = |idx: &[usize]| -> Vec<f64> { idx.iter().flat_map(|&i| design[i * k..][..k].iter().copied()).collect() };
 
-    let cand = paper_candidates(img, &global);
-    cand.iter().for_each(|&i| role[i] = PixelRole::Lightness);
-    if cand.len() < 20 * k {
-        return fallback(role);
-    }
-    let xc = rows(&cand);
     let l: Vec<[f64; 1]> = cand.iter().map(|&i| [img.data[i][0]]).collect();
-    let mut wt = vec![1.0; cand.len()];
-    let mut beta_l = Vec::new();
-    for _ in 0..=30 {
-        [beta_l] = weighted_lstsq(&xc, k, &l, &wt);
-        for ((xi, li), wi) in xc.chunks_exact(k).zip(&l).zip(wt.iter_mut()) {
-            let r = li[0] - eval(&beta_l, xi);
-            *wi = if r > 0.0 { TAU } else { 1.0 - TAU } / r.abs().max(0.05);
-        }
-    }
+    let beta_l = fit_envelope(&rows(&cand), k, &l, 30);
     let l_surf: Vec<f64> = design.par_chunks_exact(k).map(|xi| eval(&beta_l, xi)).collect();
 
     let near: Vec<usize> = cand.into_iter().filter(|&i| img.data[i][0] - l_surf[i] > -NEAR).collect();
@@ -223,7 +427,17 @@ pub fn paper_surface(img: &LabImage, global: Vec3, degree: usize) -> PaperSurfac
             [ls, a, b]
         })
         .collect();
-    PaperSurface { lab, role }
+    PaperSurface { lab, role, degree: Some(degree) }
+}
+
+/// Degree of the paper surface for a lighting setting (None: single paper colour).
+pub fn surface_degree(lighting: Lighting, img: &LabImage, paper: &PaperModel, hints: &Hints) -> Option<usize> {
+    match lighting {
+        Lighting::Auto => Some(select_degree(img, &paper.candidates(img, hints))),
+        Lighting::Even => Some(2),
+        Lighting::Uneven => Some(4),
+        Lighting::None => None,
+    }
 }
 
 #[cfg(test)]
@@ -239,6 +453,12 @@ mod tests {
         assert!((percentile(&mut v, 98.0) - 3.94).abs() < 1e-12);
     }
 
+    fn surface(img: &LabImage, degree: usize) -> Vec<Vec3> {
+        let hints = Hints::default();
+        let paper = PaperModel::estimate(img, &hints).unwrap();
+        paper_surface(img, &paper, &hints, Some(degree)).lab
+    }
+
     #[test]
     fn paper_found_despite_ink() {
         // Yellowish paper with dark ink stripes and a pale blue wash
@@ -252,9 +472,9 @@ mod tests {
             })
             .collect();
         let img = LabImage { width: w, height: h, data };
-        let g = paper_global(&img, 0.05);
+        let g = PaperModel::estimate(&img, &Hints::default()).unwrap().global;
         assert!((0..3).all(|c| (g[c] - paper[c]).abs() < 1e-9), "{g:?}");
-        let est = paper_surface(&img, g, 3).lab;
+        let est = surface(&img, 3);
         assert!(est.iter().all(|p| (0..3).all(|c| (p[c] - paper[c]).abs() < 0.5)), "{:?}", est[0]);
     }
 
@@ -271,7 +491,7 @@ mod tests {
         let (w, h) = (160, 120);
         let data = (0..w * h).map(|i| sheet_with_wash(i % w, i / w, w, h).0).collect();
         let img = LabImage { width: w, height: h, data };
-        let est = paper_surface(&img, paper_global(&img, 0.05), 3).lab;
+        let est = surface(&img, 3);
         for y in 0..h {
             for x in 0..w {
                 let paper = sheet_with_wash(x, y, w, h).0;
@@ -297,5 +517,66 @@ mod tests {
         let y: Vec<[f64; 1]> = x.chunks_exact(k).map(|r| [eval(&truth, r)]).collect();
         let [beta] = weighted_lstsq(&x, k, &y, &vec![1.0; w * h]);
         assert!(beta.iter().zip(&truth).all(|(b, t)| (b - t).abs() < 1e-8), "{beta:?}");
+    }
+
+    /// Paper lightness following a polynomial of degree `d` with ±1 L* texture noise.
+    fn lightness_sheet(d: usize) -> LabImage {
+        let (w, h) = (200, 150);
+        let data = (0..w * h)
+            .map(|i| {
+                let (x, y) = ((i % w) as f64 / w as f64 * 2.0 - 1.0, (i / w) as f64 / h as f64 * 2.0 - 1.0);
+                let l = match d {
+                    1 => 70.0 + 6.0 * x,
+                    _ => 70.0 + 6.0 * x - 8.0 * x * x * y + 5.0 * y * y * y,
+                };
+                let noise = ((i as f64 * 0.754_877_666).fract() - 0.5) * 2.0;
+                [l + noise, 1.0, 15.0]
+            })
+            .collect();
+        LabImage { width: w, height: h, data }
+    }
+
+    #[test]
+    fn degree_selection_finds_the_needed_flexibility() {
+        for (d, expected) in [(1, 1), (3, 3)] {
+            let img = lightness_sheet(d);
+            let paper = PaperModel::estimate(&img, &Hints::default()).unwrap();
+            let got = select_degree(&img, &paper.candidates(&img, &Hints::default()));
+            assert_eq!(got, expected, "lighting of degree {d}");
+        }
+    }
+
+    #[test]
+    fn scanner_background_is_not_content() {
+        // Paper in the centre, white scanner bed with a colour chart patch around it
+        let (w, h) = (120, 90);
+        let data = (0..w * h)
+            .map(|i| {
+                let (x, y) = (i % w, i / w);
+                if (15..105).contains(&x) && (10..80).contains(&y) {
+                    [72.0, 1.0, 16.0]
+                } else if x < 10 && y < 10 {
+                    [50.0, 60.0, 40.0]
+                } else {
+                    [97.0, 0.0, 0.0]
+                }
+            })
+            .collect();
+        let img = LabImage { width: w, height: h, data };
+        let paper = PaperModel::estimate(&img, &Hints::default()).unwrap();
+        assert!((paper.global[0] - 72.0).abs() < 1e-9, "{:?}", paper.global);
+        assert!(!paper.content[0] && !paper.content[5 * w + 50] && paper.content[45 * w + 60]);
+    }
+
+    #[test]
+    fn paper_touching_the_border_is_content() {
+        // Scan cropped to the map: paper up to the border, cells closed by ink lines
+        let (w, h) = (120, 90);
+        let data = (0..w * h)
+            .map(|i| if (i % w) % 20 == 10 || (i / w) % 20 == 10 { [20.0, 0.0, 2.0] } else { [72.0, 1.0, 16.0] })
+            .collect();
+        let img = LabImage { width: w, height: h, data };
+        let paper = PaperModel::estimate(&img, &Hints::default()).unwrap();
+        assert!(paper.content.iter().all(|&c| c));
     }
 }

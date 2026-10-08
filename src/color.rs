@@ -90,8 +90,12 @@ pub fn srgb_to_lab(rgb: &Vec3) -> Vec3 {
     linear_rgb_to_lab(&rgb.map(srgb_to_linear))
 }
 
+pub fn srgb_u8_to_linear(rgb: [u8; 3]) -> Vec3 {
+    rgb.map(|c| srgb_to_linear(c as f64 / 255.0))
+}
+
 pub fn srgb_to_xyz_u8(rgb: [u8; 3]) -> Vec3 {
-    mat_vec(&M_RGB2XYZ, &rgb.map(|c| srgb_to_linear(c as f64 / 255.0)))
+    mat_vec(&M_RGB2XYZ, &srgb_u8_to_linear(rgb))
 }
 
 pub fn lab_to_srgb(lab: &Vec3) -> Vec3 {
