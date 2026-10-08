@@ -4,27 +4,25 @@
 [![Rust](https://img.shields.io/badge/rust-%E2%89%A5%201.85-orange.svg)](https://www.rust-lang.org)
 [![GDAL](https://img.shields.io/badge/GDAL-3.x-green.svg)](https://gdal.org)
 
-`homog` makes the paper of scanned map sheets white, evenly across each sheet and across sheets,
-while keeping the inks and watercolour washes as they were drawn. It is meant as a pre-processing
-step before georeferencing and mosaicking maps made of several sheets, so that the assembled map
-does not look like a patchwork.
+`homog` is a fast pre-processing tool for scanned map sheets. It corrects lighting gradients, vignetting, and paper discoloration across adjacent sheets using Bradford chromatic adaptation and QGIS control points.
+
+By matching paper tone along shared sheet edges without resampling pixels, homog enables clean, seamless map mosaics while leaving delicate watercolour washes and line inks untouched.
 
 ![Three adjacent sheets, as scanned (top) and corrected (bottom)](docs/img/before-after.jpg)
 
-## Features
+## How it works
 
-- **White paper, kept colours.** The paper is white-balanced like the light of a photograph
-  (Bradford chromatic adaptation): black stays black, pale washes are not bleached.
-- **Uneven lighting corrected.** The paper colour is estimated as a smooth surface over the sheet,
-  which follows vignetting and yellowed edges but not the washes.
-- **Seamless mosaics.** Given the ground control points of the sheets (QGIS georeferencer files),
-  the paper is matched along the edges shared by adjacent sheets. Images are not resampled.
-- **Automatic, with an escape hatch.** Everything that can be measured is; when the tool is fooled,
-  show it a small crop of paper, or of a colour that is not paper.
-- **Explains itself.** Debug images per sheet, and a calibration report that flags suspicious sheets
-  of a batch.
-- **Fast.** About half a second for a 5800 × 4000 sheet; 8 or 16 bits, JPEG / TIFF / GeoTIFF / PNG;
-  ICC profiles honoured; georeferencing kept.
+1. **Find the sheet** on the scan, leaving out the scanner bed and colour charts.
+2. **Find the paper colour**: the dominant colour of the lightest pixels (or the imagettes).
+3. **Fit a smooth paper surface** that follows the lightest pixels, i.e. the paper, under uneven
+   lighting, without sinking into the washes.
+4. **White-balance** every pixel so that the local paper becomes white (Bradford chromatic adaptation).
+5. **Match the seams**: along the edges shared with adjacent sheets, measure the remaining paper
+   colour and correct it, fading inwards.
+6. **Apply** all this in one streaming pass over the full-resolution image.
+
+The [technical report](docs/technical-report.md) explains every step, each with a plain-language
+summary, the model, the results on the example atlas and what was tried and abandoned.
 
 ## Install
 
@@ -173,19 +171,6 @@ With `--debug`, each sheet gets a directory `<out-dir>/debug/<image>/`:
 
 ![Debug images: pixels used, paper surface, gain](docs/img/debug-surface.jpg)
 
-## How it works
-
-1. **Find the sheet** on the scan, leaving out the scanner bed and colour charts.
-2. **Find the paper colour**: the dominant colour of the lightest pixels (or the imagettes).
-3. **Fit a smooth paper surface** that follows the lightest pixels, i.e. the paper, under uneven
-   lighting, without sinking into the washes.
-4. **White-balance** every pixel so that the local paper becomes white (Bradford chromatic adaptation).
-5. **Match the seams**: along the edges shared with adjacent sheets, measure the remaining paper
-   colour and correct it, fading inwards.
-6. **Apply** all this in one streaming pass over the full-resolution image.
-
-The [technical report](docs/technical-report.md) explains every step, each with a plain-language
-summary, the model, the results on the example atlas and what was tried and abandoned.
 
 ## Development
 
