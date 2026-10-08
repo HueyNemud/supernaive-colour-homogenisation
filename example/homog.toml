@@ -1,0 +1,8 @@
+# Example: three adjacent sheets of an atlas of Paris held by the Service historique
+# de la Défense (GR 6 M J10 C 1188), georeferenced in the Verniquet grid (toises).
+#
+#   homog -c example/homog.toml example/*.jpg
+#
+# Every setting is optional; see the README for the full list.
+[seams]
+gcp_dir = "GCP"   # QGIS georeferencer files of the whole atlas, used to find adjacent sheets
