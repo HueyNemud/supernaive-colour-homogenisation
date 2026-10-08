@@ -141,9 +141,9 @@ chroma ([`auto_paper`](../src/background.rs)). The paper colour $\mathbf{p}$ is 
 $\sigma_{L}$,
 
 ```math
-\sigma_{ab} = \max\!\left(\sigma_{\min},\ \frac{\operatorname{median}_i \lVert (a_i, b_i) - (\mu_a, \mu_b) \rVert}{1.1774}\right),
+$$\sigma_{ab} = \max\!\left(\sigma_{\min},\ \frac{\mathrm{median}_i \lVert (a_i, b_i) - (\mu_a, \mu_b) \rVert}{1.1774}\right),
 \qquad
-\sigma_{L} = 1.4826\ \operatorname{median}_i \lvert L_i - \mu_L \rvert
+\sigma_{L} = 1.4826\ \mathrm{median}_i \lvert L_i - \mu_L \rvert$$
 ```
 
 (1.1774 is the median distance to the centre of a 2-D normal distribution, in standard deviations;
@@ -201,9 +201,7 @@ the surface and $(1-\tau)/\max(\lvert r_i \rvert, 0.05)$ below), each step by no
 decomposition.
 
 ![Lightness profile and paper surface](img/envelope-profile.png)
-
-*$L^{\ast}$ along a row of sheet 0019 (grey) and the fitted surface (blue). The plateaus around 63 are
-green washes (lawns): they stay below the surface and are not taken for paper.*
+$L^*$ *along a row of sheet 0019 (grey) and the fitted surface (blue). The plateaus around 63 are green washes (lawns): they stay below the surface and are not taken for paper.*
 
 **Chroma: bare paper only.** $\hat{a}$, $\hat{b}$ are fitted on the compatible pixels at most 4 $L^{\ast}$ units below
 the envelope, by least squares with Tukey biweights [[Beaton 1974](#ref-tukey)] on the chroma residual,
@@ -240,8 +238,7 @@ Bradford cone space [[Lam 1985](#ref-lam)]. For a pixel of linear sRGB $\mathbf{
 $\mathbf{p}(x, y)$ the paper surface converted to XYZ:
 
 ```math
-\mathbf{c}' = M^{-1}\, \operatorname{diag}\!\left(\frac{M_B\, \mathbf{t}_{XYZ}}{M_B\, \mathbf{p}_{XYZ}(x, y)}\right) M\, \mathbf{c},
-\qquad M = M_B\, M_{\mathrm{sRGB} \to \mathrm{XYZ}}
+$$\mathbf{c}' = M^{-1}\, \mathrm{diag}\!\left(\frac{M_B\, \mathbf{t}_{XYZ}}{M_B\, \mathbf{p}_{XYZ}(x, y)}\right) M\, \mathbf{c},\qquad M = M_B\, M_{\mathrm{sRGB} \to \mathrm{XYZ}}$$
 ```
 
 ([`src/transform.rs`](../src/transform.rs)). Properties:
@@ -285,7 +282,7 @@ within $\max(4,\ 2\sigma_{ab})$ of the target, its lightness above $L_t - 20$, a
 the gain bringing their median to the target is
 
 ```math
-\mathbf{g}_k = \log \frac{M_B\, \mathbf{t}_{XYZ}}{\operatorname{median}_{i \in k} \mathbf{lms}_i}
+\mathbf{g}_k = \log \frac{M_B\, \mathbf{t}_{XYZ}}{\mathrm{median}_{i \in k} \mathbf{lms}_i}
 ```
 
 Segments without paper are interpolated, then the profile is smoothed (moving average over 3 segments).
@@ -402,17 +399,6 @@ as scanned (left) and corrected (right), with one `paper` imagette for the fragm
 - **Sheet extents are the bounding boxes of their GCPs**: sheets whose GCPs are not on the neatline
   get an approximate extent, hence no or partial seam correction.
 - **Washes and inks are not harmonised across sheets**, only the paper.
-
-## 13. What was tried and abandoned
-
-| Approach | Why it was abandoned |
-| --- | --- |
-| Scaling the CIELAB channels as stored by ImageMagick ($a^{\ast}$, $b^{\ast}$ offset by 0.5), the original shell script | Not a scaling but a biased shift: neutral inks turned bluish ($b^{\ast} \approx -14$). |
-| Flat-field by Gaussian smoothing of the paper pixels | Large pale washes were taken for paper and bleached (52 % of their chroma lost on sheet 0017). |
-| Per-sheet colour matrix fitted on colour pairs across seams | No measurable improvement; the mismatch at seams was the paper lightness at the edges. |
-| Matching ink clusters (k-means) between sheets | Made things worse on non-adjacent sheets. |
-| Per-sheet degree of the surface by cross-validation | Changed the result from sheet to sheet without measurable gain. |
-| Fading distance of the seam correction measured on each edge | No gain over a fixed 12 %. |
 
 ## 14. References
 
