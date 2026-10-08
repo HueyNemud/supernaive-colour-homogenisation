@@ -1,7 +1,7 @@
 //! Raster I/O through GDAL: pixel-interleaved strip reads/writes, downsampled
 //! thumbnail reads, ICC profile extraction and georeferencing copy.
 
-use std::ffi::{c_int, c_void, CString};
+use std::ffi::{c_int, c_void};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, ensure, Context, Result};
@@ -185,15 +185,18 @@ pub enum Format {
 }
 
 impl Format {
-    pub fn resolve(self, input: &Input) -> Format {
-        match self {
-            Format::Auto => match input.ds.driver().short_name().as_str() {
-                "JPEG" => Format::Jpg,
-                "PNG" => Format::Png,
-                _ => Format::Tif,
-            },
-            f => f,
+    /// Format of a file, from its extension (anything else than PNG or JPEG is TIFF).
+    pub fn of_path(path: &Path) -> Format {
+        match path.extension().and_then(|e| e.to_str()).map(str::to_lowercase).as_deref() {
+            Some("jpg" | "jpeg") => Format::Jpg,
+            Some("png") => Format::Png,
+            _ => Format::Tif,
         }
+    }
+
+    /// Format to write for `input` (Auto: same family as the input).
+    pub fn for_input(self, input: &Path) -> Format {
+        if self == Format::Auto { Format::of_path(input) } else { self }
     }
 
     pub fn extension(self) -> &'static str {
@@ -214,13 +217,12 @@ impl Format {
 }
 
 pub struct OutputOptions {
-    pub format: Format,
     pub jpeg_quality: u8,
     pub tiff_compress: String,
 }
 
-/// Destination raster. GTiff is written strip by strip; JPEG/PNG only support
-/// CreateCopy, so they go through an in-memory dataset first.
+/// Destination raster, its format given by the extension of its path. GTiff is written strip
+/// by strip; JPEG/PNG only support CreateCopy, so they go through an in-memory dataset first.
 pub struct Output {
     ds: Dataset,
     path: PathBuf,
@@ -230,7 +232,7 @@ pub struct Output {
 
 impl Output {
     pub fn create<T: Sample>(input: &Input, path: &Path, opts: &OutputOptions) -> Result<Self> {
-        let format = opts.format.resolve(input);
+        let format = Format::of_path(path);
         let (w, h, bands) = (input.width, input.height, input.bands);
         ensure!(
             !(format == Format::Jpg && T::MAX > 255),
@@ -323,13 +325,6 @@ impl Output {
         self.ds.close()?;
         Ok(())
     }
-}
-
-/// Keep GDAL quiet on stderr except for real errors (e.g. PAM .aux.xml notices).
-pub fn init_gdal() {
-    let key = CString::new("CPL_LOG_ERRORS").unwrap();
-    let val = CString::new("ON").unwrap();
-    unsafe { gdal_sys::CPLSetConfigOption(key.as_ptr(), val.as_ptr()) };
 }
 
 /// Write an 8-bit RGB image as PNG (debug output).

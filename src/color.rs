@@ -1,4 +1,4 @@
-//! Colour conversions (sRGB, D65). Mirrors `proto/homog_proto.py`.
+//! Colour conversions (sRGB, D65).
 
 pub type Mat3 = [[f64; 3]; 3];
 pub type Vec3 = [f64; 3];

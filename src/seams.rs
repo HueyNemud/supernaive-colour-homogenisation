@@ -4,7 +4,7 @@
 //! as a step where two sheets meet. Along every edge shared with another sheet, the paper is
 //! measured (after the surface correction) in a thin band inside the neatline, per segment,
 //! and brought back to the target by a Bradford-LMS gain that fades out inwards. The band
-//! starts beyond the GCP inaccuracy and the fading distance is measured on the sheet.
+//! starts beyond the GCP inaccuracy.
 
 use crate::background::median;
 use crate::color::{mat_inv, mat_vec, white_d65, Vec3, M_BRADFORD, M_RGB2XYZ};
@@ -13,11 +13,8 @@ use crate::layout::{Edge, Layout};
 /// Width of the measurement band (fraction of the sheet size), and its minimal start
 const BAND_WIDTH: f64 = 0.01;
 const BAND_MIN_START: f64 = 0.003;
-/// Bounds of the fading distance (fractions of the sheet size)
-const REACH_BOUNDS: (f64, f64) = (0.04, 0.20);
-/// Profile of the darkening: distance tranches up to this fraction of the sheet size
-const PROFILE_DEPTH: f64 = 0.25;
-const PROFILE_TRANCHES: usize = 12;
+/// Distance over which the correction fades out (fraction of the sheet size)
+const REACH: f64 = 0.12;
 const BINS: usize = 24;
 const ALONG: usize = 400;
 const ACROSS: usize = 8;
@@ -33,25 +30,19 @@ pub fn luminance_gain(g: &[f64; 3]) -> f64 {
 /// A measurement point: full-resolution pixel position and whether it was taken as paper.
 pub type Sample = ([f64; 2], bool);
 
-/// Colours at a full-resolution pixel position: (as scanned, after the surface correction),
-/// both linear RGB; None outside the image.
-pub trait Sampler: Fn([f64; 2]) -> Option<([f64; 3], [f64; 3])> {}
-impl<F: Fn([f64; 2]) -> Option<([f64; 3], [f64; 3])>> Sampler for F {}
-
 struct EdgeProfile {
     edge: Edge,
     /// Log LMS gain per segment along the edge
     gains: Vec<[f64; 3]>,
-    /// Distance over which the correction fades out
-    reach: f64,
 }
 
 /// Log-gain field of one sheet.
 pub struct EdgeField {
     layout: Layout,
     profiles: Vec<EdgeProfile>,
-    /// Measurement band (start, end), in map units
+    /// Measurement band (start, end) and fading distance, in map units
     pub band: (f64, f64),
+    reach: f64,
     /// All band measurement points (for the debug images)
     pub samples: Vec<Sample>,
 }
@@ -77,14 +68,15 @@ fn point(edge: &Edge, t: f64, u: f64) -> [f64; 2] {
 }
 
 impl EdgeField {
-    /// Measure the paper along `edges`. `is_paper(scanned, corrected)` tells whether a pair of
-    /// linear RGB colours is bare paper.
+    /// Measure the paper along `edges`. `sample` gives the linear RGB colours at a
+    /// full-resolution pixel position (as scanned, after the surface correction), None outside
+    /// the image; `is_paper(scanned, corrected)` tells whether they are bare paper.
     pub fn measure(
         layout: &Layout,
         edges: &[Edge],
         target_xyz: &Vec3,
         is_paper: impl Fn(&[f64; 3], &[f64; 3]) -> bool,
-        sample: impl Sampler,
+        sample: impl Fn([f64; 2]) -> Option<([f64; 3], [f64; 3])>,
     ) -> Self {
         let size = layout.size();
         let lms_t = mat_vec(&M_BRADFORD, target_xyz);
@@ -141,36 +133,10 @@ impl EdgeField {
                         [0, 1, 2].map(|c| idx.iter().map(|&i| filled[i][c]).sum::<f64>() / 3.0)
                     })
                     .collect();
-                // Darkening profile: paper gain per distance tranche; the correction fades out
-                // where the remaining gain falls below a quarter of the gain at the edge
-                let at_edge = luminance_gain(&log_gain(&bins.concat()).map(f64::exp)).ln();
-                let mut reach = REACH_BOUNDS.1 * size;
-                if at_edge.abs() < 0.01 {
-                    reach = REACH_BOUNDS.0 * size;
-                } else {
-                    for k in 0..PROFILE_TRANCHES {
-                        let t = band.1 + (PROFILE_DEPTH * size - band.1) * (k as f64 + 0.5) / PROFILE_TRANCHES as f64;
-                        let paper: Vec<Vec3> = (0..ALONG / 4)
-                            .filter_map(|a| {
-                                let u = u0 + (u1 - u0) * a as f64 / (ALONG / 4 - 1) as f64;
-                                let (raw, corrected) = sample(layout.pixel(point(&edge, t, u)))?;
-                                is_paper(&raw, &corrected).then(|| to_lms(&corrected))
-                            })
-                            .collect();
-                        if paper.len() >= 10 {
-                            let g = luminance_gain(&log_gain(&paper).map(f64::exp)).ln();
-                            if g.abs() < 0.25 * at_edge.abs() || g.signum() != at_edge.signum() {
-                                reach = t;
-                                break;
-                            }
-                        }
-                    }
-                }
-                let reach = reach.clamp(REACH_BOUNDS.0 * size, REACH_BOUNDS.1 * size);
-                Some(EdgeProfile { edge, gains, reach })
+                Some(EdgeProfile { edge, gains })
             })
             .collect();
-        Self { layout: layout.clone(), profiles, band, samples }
+        Self { layout: layout.clone(), profiles, band, reach: REACH * size, samples }
     }
 
     pub fn edges(&self) -> usize {
@@ -184,13 +150,12 @@ impl EdgeField {
             .map(|p| {
                 let e = &p.edge;
                 let name = format!(
-                    "{} edge {} = {:.1} (span {:.1}..{:.1}), fading over {:.1} map units",
+                    "{} edge {} = {:.1} (span {:.1}..{:.1})",
                     if e.axis == 0 { "vertical" } else { "horizontal" },
                     if e.axis == 0 { "x" } else { "y" },
                     e.pos,
                     e.span.0,
-                    e.span.1,
-                    p.reach
+                    e.span.1
                 );
                 (name, p.gains.iter().map(|g| luminance_gain(&g.map(f64::exp))).collect())
             })
@@ -198,7 +163,7 @@ impl EdgeField {
     }
 
     /// Log LMS gain at a full-resolution pixel position: full correction up to the middle of
-    /// the measurement band, fading out (squared ramp) at the edge's reach. Near a corner,
+    /// the measurement band, fading out (squared ramp) at 12 % of the sheet size. Near a corner,
     /// the corrections of the two edges measure the same darkening: they are averaged
     /// rather than added (weights normalised when they sum to more than 1).
     pub fn log_gain(&self, px: [f64; 2]) -> [f64; 3] {
@@ -210,7 +175,7 @@ impl EdgeField {
             // Full correction up to the middle of the measurement band, then fading out
             let d = p.edge.inward * (across - p.edge.pos);
             let mid = (self.band.0 + self.band.1) / 2.0;
-            let phi = if d <= mid { 1.0 } else { (1.0 - (d - mid) / (p.reach - mid)).clamp(0.0, 1.0).powi(2) };
+            let phi = if d <= mid { 1.0 } else { (1.0 - (d - mid) / (self.reach - mid)).clamp(0.0, 1.0).powi(2) };
             if phi > 0.0 {
                 let (u0, u1) = p.edge.span;
                 let v = interp_bins((along - u0) / (u1 - u0), &p.gains);
@@ -262,16 +227,8 @@ mod tests {
         let band: Vec<f64> = (592..597).map(|x| corrected(x as f64)).collect();
         let mean = band.iter().sum::<f64>() / band.len() as f64;
         assert!((mean - 1.0).abs() < 0.03, "band mean {mean}");
-        // No correction far from the edge
-        assert_eq!(f.log_gain([300.0, 200.0]), [0.0; 3]);
-    }
-
-    #[test]
-    fn fading_distance_follows_the_darkening_width() {
-        // Darkening over 60 then 100 units: the fading distance grows accordingly
-        let (r60, r100) = (field(60.0).profiles[0].reach, field(100.0).profiles[0].reach);
-        assert!(r100 > r60 * 1.3, "reach {r60} then {r100}");
-        assert!((40.0..=90.0).contains(&r60), "reach {r60} for a 60-unit darkening");
+        // No correction beyond the reach (12 % of 600 = 72 units)
+        assert_eq!(f.log_gain([500.0, 200.0]), [0.0; 3]);
     }
 
     #[test]

@@ -19,13 +19,13 @@ Given an input image $I$:
 1. **Paper estimation** on a ~400 px thumbnail, in CIELAB:
    - content mask: the scanner bed is the uniform colour touching the image border; it is flood-filled from the border and only the largest remaining region (the sheet) is kept, which drops colour charts or rulers lying on the bed;
    - global paper colour $p$: median of the bright pixels (75th–98th percentile of $L^*$) whose chroma is close to the dominant one — or, if `paper` imagettes are given, of the pixels matching them. Pixels matching `keep` imagettes are never taken for paper;
-   - paper surface $p(x, y)$: smooth polynomial surfaces for $L^*$, $a^*$ and $b^*$, fitted on the pixels compatible with the paper model (Mahalanobis distance in $a^*b^*$, the tolerance following the spread of the paper colour). Bare paper is the lightest material, since a transparent wash or ink can only darken it, so $L^*$ is fitted as an *upper envelope* (80 % quantile regression), and $a^*, b^*$ only on the pixels close to that envelope, with a robust (Tukey) rejection of other hues. A low-degree surface follows uneven lighting and yellowed edges but cannot follow a wash patch, however large: pale washes keep their colour instead of being bleached. The degree (1 to 5) is chosen per sheet by spatial cross-validation of the envelope fit: the smallest degree within 1 % of the best held-out loss.
+   - paper surface $p(x, y)$: smooth polynomial surfaces for $L^*$, $a^*$ and $b^*$, fitted on the pixels compatible with the paper model (a tolerance in $a^*b^*$ following the spread of the paper colour). Bare paper is the lightest material, since a transparent wash or ink can only darken it, so $L^*$ is fitted as an *upper envelope* (80 % quantile regression), and $a^*, b^*$ only on the pixels close to that envelope, with a robust (Tukey) rejection of other hues. A low-degree surface follows uneven lighting and yellowed edges but cannot follow a wash patch, however large: pale washes keep their colour instead of being bleached. The degree is 3 by default (`lighting`: `even` = 2, `uneven` = 4, `none` = single paper colour).
 2. **Adaptation**, per pixel, in linear light:
    $`\mathrm{RGB}' = M^{-1}\,\mathrm{diag}\!\left(\frac{M\,t_{XYZ}}{M\,p_{XYZ}(x,y)}\right) M\,\mathrm{RGB}`$, with $M = M_{\mathrm{Bradford}} \cdot M_{\mathrm{sRGB \to XYZ}}$.
 
    The paper becomes $t$, black stays black, greys of the paper's tint become neutral, and the other colours are adapted consistently (no hue shift, no clipping of pale washes darker than the paper).
 
-3. **Seams** (optional, `--gcp-dir`): the paper surface cannot follow the darkening close to the edges of a sheet, which shows as a step where two sheets meet. The layout of the sheets is read from their ground control points (QGIS georeferencer `.points` files): a map ↔ pixel affine transform per sheet, and the sheet extent, taken as the bounding box of its GCPs (which sit on the neatline). Along every edge shared with another sheet of the GCP directory, the paper is measured on the corrected image, in a band 1 % of the sheet size wide starting beyond twice the RMS residual of the GCPs (at least 0.3 %), per segment (24 along the edge), then brought back to $t$ by an extra Bradford gain. The gain is full up to the middle of the band and fades out where the measured darkening profile has decayed to a quarter (4–20 % of the sheet size). **Images are not resampled**: the GCPs only tell which sheets touch and where.
+3. **Seams** (optional, `--gcp-dir`): the paper surface cannot follow the darkening close to the edges of a sheet, which shows as a step where two sheets meet. The layout of the sheets is read from their ground control points (QGIS georeferencer `.points` files): a map ↔ pixel affine transform per sheet, and the sheet extent, taken as the bounding box of its GCPs (which sit on the neatline). Along every edge shared with another sheet of the GCP directory, the paper is measured on the corrected image, in a band 1 % of the sheet size wide starting beyond twice the RMS residual of the GCPs (at least 0.3 %), per segment (24 along the edge), then brought back to $t$ by an extra Bradford gain. The gain is full up to the middle of the band and fades out over 12 % of the sheet size. **Images are not resampled**: the GCPs only tell which sheets touch and where.
 
 The gains are computed on the low-resolution surface and bilinearly interpolated, so the full-resolution pass is a single streaming loop (decode → 2 matrix products → encode), parallelised over rows.
 
@@ -47,7 +47,7 @@ homog calibrate [OPTIONS] <FILES>...    analyse them and propose a configuration
 Common options:
   -c, --config <FILE>           Configuration file (homog.toml)
   -t, --target <r,g,b>          Target background colour [default: 255,255,255]
-  -l, --lighting <L>            auto | even | uneven | none [default: auto]
+  -l, --lighting <L>            even | normal | uneven | none [default: normal]
       --paper <DIR>             Imagettes of bare paper
       --keep <DIR>              Imagettes of colours that must not become white
   -g, --gcp-dir <DIR>           GCP files (<image file name>.points, QGIS georeferencer) giving the
@@ -80,7 +80,7 @@ The sheets that touch are found among all the `.points` files of the GCP directo
 
 ## Settings
 
-Everything that can be measured is automatic: where the sheet is on the scan, the paper colour and its tolerance, the flexibility of the paper surface, the position and reach of the seam correction. What only the user knows is given as **imagettes**: small crops (at least 10 × 10 px, PNG/JPEG/TIFF) cut from the scans with any image viewer, one example per file.
+Everything that can be measured is automatic: where the sheet is on the scan, the paper colour and its tolerance, the position of the seam measurement band. What only the user knows is given as **imagettes**: small crops (at least 10 × 10 px, PNG/JPEG/TIFF) cut from the scans with any image viewer, one example per file.
 
 | Directory | Content | When |
 | --- | --- | --- |
@@ -93,7 +93,7 @@ Settings can be gathered in a `homog.toml` (relative paths are relative to this 
 
 ```toml
 target = [255, 255, 255]
-lighting = "auto"            # auto | even (degree 2) | uneven (degree 4) | none (single colour)
+lighting = "normal"          # even (degree 2) | normal (3) | uneven (4) | none (single colour)
 icc = true
 [hints]
 paper = "hints/paper"
@@ -112,7 +112,7 @@ compress = "DEFLATE"
 `homog calibrate` analyses the sheets without writing corrected images and writes to `calib/`:
 
 - `contact_sheet.png`: one row per sheet: original | pixels taken for paper (green = bare paper, orange = lightness only, grey = ignored, dark red = outside the sheet) | result;
-- `calibrate.txt`: batch paper colour and, per sheet, paper colour, distance to the batch, share of bare paper found, surface degree, seams and warnings (*paper far from the batch*, *little bare paper found*);
+- `calibrate.txt`: batch paper colour and, per sheet, paper colour, distance to the batch, share of bare paper found, seams and warnings (*paper far from the batch*, *little bare paper found*);
 - `homog.toml`: proposed configuration.
 
 Typical workflow: run `calibrate`, look at the rows of the sheets with warnings; if something other than paper is green, crop it into `hints/keep/`; if the paper of the map is not green, crop it into `hints/paper/`; rerun `calibrate` with the hints, then `homog -c calib/homog.toml`.
@@ -130,7 +130,7 @@ With `--debug`, each sheet gets a `<out-dir>/debug/<image>/` directory:
 | `5_gain_seams.png` | luminance gain of the seam correction (blue = darker, white = unchanged, red = lighter; symmetric scale given in `debug.txt`) |
 | `6_seam_samples.png` | result with the seam measurement points: green = paper, red = rejected |
 | `7_result.png` | result (reduced) |
-| `debug.txt` | global paper colour and spread, surface degree, gain ranges, seam band, reach and gain per segment |
+| `debug.txt` | global paper colour and spread, surface degree, gain ranges, seam band and gain per segment |
 
 Supported inputs: RGB or RGBA images, 8 or 16 bits (JPEG, TIFF/GeoTIFF, PNG, and any format GDAL reads).
 
@@ -147,16 +147,13 @@ Supported inputs: RGB or RGBA images, 8 or 16 bits (JPEG, TIFF/GeoTIFF, PNG, and
 | Single sheet | 0.5 s |
 | With seams (`-g example/GCP`) | 0.6 s |
 
-Most of the time is spent in JPEG decoding/encoding; the analysis (content mask, paper model, degree selection, surface fit) takes ~0.15 s per sheet whatever its size, the seam correction ~0.1 s more (a second, reduced read of the image). The 59 GCP-referenced sheets of the example atlas are calibrated in 8 s.
+Most of the time is spent in JPEG decoding/encoding; the analysis (content mask, paper model, surface fit) takes ~0.1 s per sheet whatever its size, the seam correction ~0.1 s more (a second, reduced read of the image). The 59 GCP-referenced sheets of the example atlas are calibrated in 8 s.
 
-## Tests and prototype
+## Tests
 
 ```bash
 cargo test --release          # unit tests + end-to-end tests on synthetic sheets
-uv run proto/homog_proto.py -g example/GCP example/*__00{17,19,21}.jpg   # Python prototype
 ```
-
-`proto/homog_proto.py` is the prototype used to design the colour model (Bradford adaptation, paper surface, seams; it writes `proto/out/comparison.png`, `proto/out/seams.png` and metrics; `-s` sets the processing scale, 0.25 by default). It does not include the automatic settings nor the imagettes of the Rust tool. `proto/compare_de.py` reports ΔE statistics between two renderings.
 
 ## Additional thoughts
 

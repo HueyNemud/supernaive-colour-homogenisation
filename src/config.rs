@@ -2,7 +2,7 @@
 //!
 //! ```toml
 //! target = [255, 255, 255]
-//! lighting = "auto"            # auto | even | uneven | none
+//! lighting = "normal"          # even | normal | uneven | none
 //! icc = true
 //! [hints]
 //! paper = "hints/paper"        # imagettes of bare paper

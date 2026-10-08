@@ -3,14 +3,14 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use rayon::prelude::*;
 
 use homog::background::Lighting;
 use homog::calibrate::{self, Proposal};
 use homog::config::Config;
 use homog::hints::Hints;
-use homog::io::{init_gdal, Format, OutputOptions};
+use homog::io::{Format, OutputOptions};
 use homog::layout::{Atlas, Seams};
 use homog::{process_file, Options};
 
@@ -49,7 +49,7 @@ struct Common {
     #[arg(short, long, value_parser = parse_rgb)]
     target: Option<[u8; 3]>,
 
-    /// Unevenness of the lighting, i.e. flexibility of the paper surface [default: auto]
+    /// Unevenness of the lighting, i.e. flexibility of the paper surface [default: normal]
     #[arg(short, long, value_enum)]
     lighting: Option<Lighting>,
 
@@ -139,7 +139,7 @@ impl Settings {
         let config = c.config.as_deref().map(Config::load).transpose()?.unwrap_or_default();
         Ok(Self {
             target: c.target.or(config.target).unwrap_or([255, 255, 255]),
-            lighting: c.lighting.or(config.lighting).unwrap_or(Lighting::Auto),
+            lighting: c.lighting.or(config.lighting).unwrap_or_default(),
             icc: !c.ignore_icc && config.icc.unwrap_or(true),
             paper: c.paper.clone().or(config.hints.paper.clone()),
             keep: c.keep.clone().or(config.hints.keep.clone()),
@@ -184,7 +184,6 @@ fn setup(c: &Common) -> Result<()> {
     if let Some(j) = c.jobs {
         rayon::ThreadPoolBuilder::new().num_threads(j).build_global()?;
     }
-    init_gdal();
     Ok(())
 }
 
@@ -196,7 +195,6 @@ fn process(args: ProcessArgs) -> Result<bool> {
     let out_dir = args.out_dir.clone().or(out.dir.clone()).unwrap_or_else(|| PathBuf::from("output"));
     let format = args.format.or(out.format).unwrap_or(Format::Auto);
     let output = OutputOptions {
-        format,
         jpeg_quality: args.jpeg_quality.or(out.jpeg_quality).unwrap_or(95),
         tiff_compress: args.compress.clone().or(out.compress.clone()).unwrap_or_else(|| "DEFLATE".into()),
     };
@@ -206,14 +204,7 @@ fn process(args: ProcessArgs) -> Result<bool> {
     let mut seen: HashMap<PathBuf, &PathBuf> = HashMap::new();
     let mut jobs = Vec::new();
     for f in &c.files {
-        let ext = match format {
-            Format::Auto => match f.extension().and_then(|e| e.to_str()).map(str::to_lowercase).as_deref() {
-                Some("jpg" | "jpeg") => "jpg",
-                Some("png") => "png",
-                _ => "tif",
-            },
-            fmt => fmt.extension(),
-        };
+        let ext = format.for_input(f).extension();
         let stem = f.file_stem().with_context(|| format!("invalid file name {}", f.display()))?;
         let dst = out_dir.join(stem).with_extension(ext);
         if let Some(prev) = seen.insert(dst.clone(), f) {
@@ -267,7 +258,7 @@ fn calibrate(args: CalibrateArgs) -> Result<bool> {
     let s = Settings::new(c)?;
     let files: Vec<&PathBuf> = c.files.iter().collect();
     let seams = s.seams(&files)?;
-    let opts = s.options(OutputOptions { format: Format::Auto, jpeg_quality: 95, tiff_compress: "DEFLATE".into() }, None)?;
+    let opts = s.options(OutputOptions { jpeg_quality: 95, tiff_compress: "DEFLATE".into() }, None)?;
     let reports: Vec<_> = files
         .par_iter()
         .zip(&seams)
@@ -284,7 +275,8 @@ fn calibrate(args: CalibrateArgs) -> Result<bool> {
             }
         }
     }
-    let proposal = Proposal { target: s.target, icc: s.icc, gcp_dir: s.gcp_dir.clone(), paper_hints: s.paper.clone(), keep_hints: s.keep.clone() };
+    let lighting = s.lighting.to_possible_value().map(|v| v.get_name().to_owned()).unwrap_or_default();
+    let proposal = Proposal { target: s.target, lighting, icc: s.icc, gcp_dir: s.gcp_dir.clone(), paper_hints: s.paper.clone(), keep_hints: s.keep.clone() };
     calibrate::write(&args.out_dir, &sheets, &proposal)?;
     if c.verbose {
         eprintln!("{} sheet(s) analysed, report in {}", sheets.len(), Path::new(&args.out_dir).join("calibrate.txt").display());

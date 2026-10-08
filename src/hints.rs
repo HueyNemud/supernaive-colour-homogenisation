@@ -14,56 +14,32 @@ use crate::io::Input;
 /// Mahalanobis radius (in a*b*) within which a colour matches a model
 pub const MATCH_RADIUS: f64 = 3.5;
 
-/// Robust colour model in CIELAB: centre, a*b* covariance and L* spread.
+/// Robust colour model in CIELAB: centre, a*b* and L* spreads.
 #[derive(Clone, Debug)]
 pub struct ColourModel {
     pub mean: Vec3,
-    inv_ab: [[f64; 2]; 2],
-    /// Largest a*b* standard deviation (after flooring)
+    /// a*b* standard deviation (per axis, after flooring)
     pub sd_ab: f64,
     pub sd_l: f64,
 }
 
 impl ColourModel {
-    /// Model of a set of Lab pixels: median centre; covariance of the pixels within 3 robust
-    /// standard deviations of it; a*b* standard deviations floored at `min_sd_ab`.
+    /// Model of a set of Lab pixels: median centre, robust spreads (the median a*b* distance
+    /// to the centre is 1.18 standard deviations for a 2-D normal spread), a*b* standard
+    /// deviation floored at `min_sd_ab`.
     pub fn from_pixels(px: &[Vec3], min_sd_ab: f64) -> Option<Self> {
         if px.len() < 10 {
             return None;
         }
         let mean = [0, 1, 2].map(|c| median(px.iter().map(|p| p[c]).collect()));
-        let dist = |p: &Vec3| ((p[1] - mean[1]).powi(2) + (p[2] - mean[2]).powi(2)).sqrt();
-        let mad = 1.4826 * median(px.iter().map(dist).collect());
-        let core: Vec<&Vec3> = px.iter().filter(|p| dist(p) <= 3.0 * mad.max(0.5)).collect();
-        let n = core.len() as f64;
-        let cov = |i: usize, j: usize| core.iter().map(|p| (p[i] - mean[i]) * (p[j] - mean[j])).sum::<f64>() / n;
+        let sd_ab = median(px.iter().map(|p| (p[1] - mean[1]).hypot(p[2] - mean[2])).collect()) / 1.1774;
         let sd_l = 1.4826 * median(px.iter().map(|p| (p[0] - mean[0]).abs()).collect());
-        // Eigen-decomposition of the 2x2 covariance, eigenvalues floored
-        let (saa, sab, sbb) = (cov(1, 1), cov(1, 2), cov(2, 2));
-        let tr = saa + sbb;
-        let det = saa * sbb - sab * sab;
-        let disc = ((tr * tr / 4.0) - det).max(0.0).sqrt();
-        let (l1, l2) = (tr / 2.0 + disc, tr / 2.0 - disc);
-        let (v1, v2) = if sab.abs() > 1e-12 {
-            let v = [l1 - sbb, sab];
-            let n = v[0].hypot(v[1]);
-            ([v[0] / n, v[1] / n], [-v[1] / n, v[0] / n])
-        } else if saa >= sbb {
-            ([1.0, 0.0], [0.0, 1.0])
-        } else {
-            ([0.0, 1.0], [1.0, 0.0])
-        };
-        let floor = min_sd_ab * min_sd_ab;
-        let (e1, e2) = (l1.max(floor), l2.max(floor));
-        let inv = |i: usize, j: usize| v1[i] * v1[j] / e1 + v2[i] * v2[j] / e2;
-        Some(Self { mean, inv_ab: [[inv(0, 0), inv(0, 1)], [inv(1, 0), inv(1, 1)]], sd_ab: e1.sqrt(), sd_l })
+        Some(Self { mean, sd_ab: sd_ab.max(min_sd_ab), sd_l })
     }
 
-    /// Mahalanobis distance in a*b*.
+    /// a*b* distance to the centre, in standard deviations.
     pub fn distance_ab(&self, lab: &Vec3) -> f64 {
-        let (da, db) = (lab[1] - self.mean[1], lab[2] - self.mean[2]);
-        let m = &self.inv_ab;
-        (da * (m[0][0] * da + m[0][1] * db) + db * (m[1][0] * da + m[1][1] * db)).max(0.0).sqrt()
+        (lab[1] - self.mean[1]).hypot(lab[2] - self.mean[2]) / self.sd_ab
     }
 }
 
@@ -126,21 +102,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn model_of_an_elongated_cloud() {
-        // a* spread 4 along a*, b* spread 1: Mahalanobis distance scales accordingly
-        let px: Vec<Vec3> = (0..2000)
+    fn model_of_a_cloud() {
+        // a*b* uniformly spread on a disc of radius 6 around (2, 15), plus 10 % outliers
+        let mut px: Vec<Vec3> = (0..2000)
             .map(|i| {
-                let t = (i as f64 * 0.618).fract() * 2.0 - 1.0;
-                let u = (i as f64 * 0.414).fract() * 2.0 - 1.0;
-                [70.0, 2.0 + 4.0 * 3f64.sqrt() * t, 15.0 + 3f64.sqrt() * u]
+                let r = 6.0 * ((i as f64 * 0.618_034).fract()).sqrt();
+                let t = std::f64::consts::TAU * (i as f64 * 0.414_214).fract();
+                [70.0, 2.0 + r * t.cos(), 15.0 + r * t.sin()]
             })
             .collect();
+        px.extend((0..200).map(|_| [30.0, 40.0, -20.0]));
         let m = ColourModel::from_pixels(&px, 0.5).unwrap();
-        assert!((m.mean[1] - 2.0).abs() < 0.3 && (m.mean[2] - 15.0).abs() < 0.3, "{:?}", m.mean);
-        assert!((m.sd_ab - 4.0).abs() < 0.4, "sd {}", m.sd_ab);
-        let along_a = m.distance_ab(&[70.0, 2.0 + 8.0, 15.0]);
-        let along_b = m.distance_ab(&[70.0, 2.0, 15.0 + 2.0]);
-        assert!((along_a - 2.0).abs() < 0.3 && (along_b - 2.0).abs() < 0.3, "{along_a} {along_b}");
+        assert!((m.mean[1] - 2.0).abs() < 0.5 && (m.mean[2] - 15.0).abs() < 0.5, "{:?}", m.mean);
+        // Median radius of the disc: 6 / sqrt(2) = 4.24 -> sd 3.6
+        assert!((m.sd_ab - 3.6).abs() < 0.4, "sd {}", m.sd_ab);
     }
 
     #[test]

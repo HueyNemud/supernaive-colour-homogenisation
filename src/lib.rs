@@ -3,8 +3,7 @@
 //! Pipeline per image:
 //! 1. downsampled read -> Lab thumbnail;
 //! 2. paper estimation: content mask, paper colour model (automatic or from `paper`
-//!    imagettes, `keep` imagettes excluded), then a smooth paper surface (flat-field) whose
-//!    degree is chosen by cross-validation;
+//!    imagettes, `keep` imagettes excluded), then a smooth paper surface (flat-field);
 //! 3. seams (optional, layout from GCPs): along the edges shared with adjacent sheets, the
 //!    remaining paper colour is measured on a reduced image and corrected, fading inwards;
 //! 4. one streaming pass over full-resolution strips: decode (sRGB LUT or ICC),
@@ -28,7 +27,7 @@ use anyhow::{Context, Result};
 use lcms2::{CIExyY, CIExyYTRIPLE, DisallowCache, Flags, GlobalContext, Intent, PixelFormat, Profile, ToneCurve};
 use rayon::prelude::*;
 
-use background::{paper_surface, surface_degree, LabImage, Lighting, PaperModel, PaperSurface, PixelRole};
+use background::{paper_surface, LabImage, Lighting, PaperModel, PaperSurface, PixelRole};
 use color::{decode_table, linear_rgb_to_lab, srgb_to_linear, srgb_to_xyz_u8, srgb_u8_to_linear, SrgbEncoder, Vec3};
 use hints::Hints;
 use io::{Input, Output, OutputOptions, Sample, SampleType};
@@ -87,7 +86,6 @@ pub struct Analysis {
     pub height: usize,
     pub icc: bool,
     pub thumb: Reduced,
-    pub lab: LabImage,
     pub paper: PaperModel,
     pub surface: PaperSurface,
     /// Gains of the surface correction alone
@@ -211,8 +209,7 @@ pub fn analyse(src: &Input, opts: &Options, seams: Option<&Seams>) -> Result<Ana
 
     // 2. Paper model and surface
     let paper = PaperModel::estimate(&lab, &opts.hints)?;
-    let degree = surface_degree(opts.lighting, &lab, &paper, &opts.hints);
-    let surface = paper_surface(&lab, &paper, &opts.hints, degree);
+    let surface = paper_surface(&lab, &paper, &opts.hints, opts.lighting.degree());
     let target_xyz = srgb_to_xyz_u8(opts.target);
     let surface_gains = GainMap::from_paper_lab(&surface.lab, tw, th, &target_xyz);
     let mut adapter = Adapter::new(surface_gains.clone(), src.width, src.height);
@@ -246,7 +243,6 @@ pub fn analyse(src: &Input, opts: &Options, seams: Option<&Seams>) -> Result<Ana
         height: src.height,
         icc: icc.is_some(),
         thumb,
-        lab,
         paper,
         surface,
         surface_gains,

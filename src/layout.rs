@@ -1,6 +1,5 @@
 //! Layout of the sheets in map space, from their ground control points (GCPs).
 //! No resampling is involved: the layout only tells which sheets touch and where.
-//! Mirrors `read_points`, `Layout` and `shared_edges` of `proto/homog_proto.py`.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -155,10 +154,6 @@ impl Atlas {
             }
         }
         Ok(Self { sheets })
-    }
-
-    pub fn len(&self) -> usize {
-        self.sheets.len()
     }
 
     pub fn is_empty(&self) -> bool {

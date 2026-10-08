@@ -36,17 +36,30 @@ fn ab_dist(p: &Vec3, q: &Vec3) -> f64 {
 }
 
 /// How uneven the lighting of the scans is, i.e. how flexible the paper surface is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Lighting {
-    /// Degree chosen per sheet by spatial cross-validation
-    Auto,
     /// Degree 2
     Even,
+    /// Degree 3
+    #[default]
+    Normal,
     /// Degree 4
     Uneven,
     /// Single paper colour per sheet (no flat-field)
     None,
+}
+
+impl Lighting {
+    /// Degree of the paper surface (None: single paper colour).
+    pub fn degree(self) -> Option<usize> {
+        match self {
+            Lighting::Even => Some(2),
+            Lighting::Normal => Some(3),
+            Lighting::Uneven => Some(4),
+            Lighting::None => None,
+        }
+    }
 }
 
 /// Floor of the a*b* spread of the automatic paper model: paper within 8 Δab of the
@@ -101,8 +114,8 @@ fn flood(w: usize, h: usize, seeds: impl IntoIterator<Item = usize>, inside: imp
 /// Pixels of the sheet, and the colour of the scanner bed if one was found. The bed is the
 /// uniform colour touching the image border: it is flood-filled from the border, then only
 /// the largest remaining region (the sheet) is kept, which also drops colour charts or rulers
-/// lying on the bed. If the "bed" covers most of the image, the scan is cropped to the map
-/// and everything is content.
+/// lying on the bed. If the "bed" covers most of the image (scan cropped to the map) or the
+/// largest region is small (the "bed" was a grid of lines), everything is content.
 pub fn content_mask(img: &LabImage) -> (Vec<bool>, Option<Vec3>) {
     let (w, h) = (img.width, img.height);
     let border: Vec<usize> = (0..w).flat_map(|x| [x, (h - 1) * w + x]).chain((0..h).flat_map(|y| [y * w, y * w + w - 1])).collect();
@@ -136,6 +149,11 @@ pub fn content_mask(img: &LabImage) -> (Vec<bool>, Option<Vec3>) {
         if size > best.0 {
             best = (size, start);
         }
+    }
+    // A sheet cut into small regions means the "bed" was something else (e.g. ink lines
+    // touching the border): no background then
+    if best.0 * 10 < w * h * 3 {
+        return (vec![true; w * h], None);
     }
     (label.iter().map(|&l| l == best.1).collect(), Some(bed))
 }
@@ -310,55 +328,6 @@ fn fit_envelope(x: &[f64], k: usize, l: &[[f64; 1]], iterations: usize) -> Vec<f
     beta
 }
 
-fn pinball(r: f64) -> f64 {
-    if r > 0.0 { TAU * r } else { (TAU - 1.0) * r }
-}
-
-/// Degree of the paper surface for `lighting = auto`: spatial 4-fold cross-validation of the
-/// envelope fit (folds = interleaved blocks of a 4 x 4 grid), smallest degree whose held-out
-/// quantile loss is within 1 % of the best. A stiffer surface protects the washes.
-pub fn select_degree(img: &LabImage, cand: &[usize]) -> usize {
-    const DEGREES: std::ops::RangeInclusive<usize> = 1..=5;
-    let (w, h) = (img.width, img.height);
-    let step = (cand.len() / 20_000).max(1);
-    let pts: Vec<usize> = cand.iter().step_by(step).copied().collect();
-    let fold = |i: usize| {
-        let (bx, by) = ((i % w) * 4 / w, (i / w) * 4 / h);
-        (bx % 2) + 2 * (by % 2)
-    };
-    let losses: Vec<f64> = DEGREES
-        .into_par_iter()
-        .map(|d| {
-            let k = n_terms(d);
-            let mut row = vec![0.0; k];
-            let (mut loss, mut n) = (0.0, 0.0);
-            for f in 0..4 {
-                let (train, test): (Vec<usize>, Vec<usize>) = pts.iter().partition(|&&i| fold(i) != f);
-                if train.len() < 20 * k || test.is_empty() {
-                    continue;
-                }
-                let x: Vec<f64> = train
-                    .iter()
-                    .flat_map(|&i| {
-                        monomials(i % w, i / w, w, h, d, &mut row);
-                        row.clone()
-                    })
-                    .collect();
-                let l: Vec<[f64; 1]> = train.iter().map(|&i| [img.data[i][0]]).collect();
-                let beta = fit_envelope(&x, k, &l, 15);
-                for &i in &test {
-                    monomials(i % w, i / w, w, h, d, &mut row);
-                    loss += pinball(img.data[i][0] - eval(&beta, &row));
-                    n += 1.0;
-                }
-            }
-            if n > 0.0 { loss / n } else { f64::INFINITY }
-        })
-        .collect();
-    let best = losses.iter().copied().fold(f64::INFINITY, f64::min);
-    DEGREES.zip(&losses).find(|(_, l)| **l <= best * 1.01).map_or(3, |(d, _)| d)
-}
-
 /// Paper surface: smooth polynomial surfaces of the given degree (None: single colour),
 /// robust to large washes.
 ///
@@ -428,16 +397,6 @@ pub fn paper_surface(img: &LabImage, paper: &PaperModel, hints: &Hints, degree: 
         })
         .collect();
     PaperSurface { lab, role, degree: Some(degree) }
-}
-
-/// Degree of the paper surface for a lighting setting (None: single paper colour).
-pub fn surface_degree(lighting: Lighting, img: &LabImage, paper: &PaperModel, hints: &Hints) -> Option<usize> {
-    match lighting {
-        Lighting::Auto => Some(select_degree(img, &paper.candidates(img, hints))),
-        Lighting::Even => Some(2),
-        Lighting::Uneven => Some(4),
-        Lighting::None => None,
-    }
 }
 
 #[cfg(test)]
@@ -519,33 +478,6 @@ mod tests {
         assert!(beta.iter().zip(&truth).all(|(b, t)| (b - t).abs() < 1e-8), "{beta:?}");
     }
 
-    /// Paper lightness following a polynomial of degree `d` with ±1 L* texture noise.
-    fn lightness_sheet(d: usize) -> LabImage {
-        let (w, h) = (200, 150);
-        let data = (0..w * h)
-            .map(|i| {
-                let (x, y) = ((i % w) as f64 / w as f64 * 2.0 - 1.0, (i / w) as f64 / h as f64 * 2.0 - 1.0);
-                let l = match d {
-                    1 => 70.0 + 6.0 * x,
-                    _ => 70.0 + 6.0 * x - 8.0 * x * x * y + 5.0 * y * y * y,
-                };
-                let noise = ((i as f64 * 0.754_877_666).fract() - 0.5) * 2.0;
-                [l + noise, 1.0, 15.0]
-            })
-            .collect();
-        LabImage { width: w, height: h, data }
-    }
-
-    #[test]
-    fn degree_selection_finds_the_needed_flexibility() {
-        for (d, expected) in [(1, 1), (3, 3)] {
-            let img = lightness_sheet(d);
-            let paper = PaperModel::estimate(&img, &Hints::default()).unwrap();
-            let got = select_degree(&img, &paper.candidates(&img, &Hints::default()));
-            assert_eq!(got, expected, "lighting of degree {d}");
-        }
-    }
-
     #[test]
     fn scanner_background_is_not_content() {
         // Paper in the centre, white scanner bed with a colour chart patch around it
@@ -566,6 +498,17 @@ mod tests {
         let paper = PaperModel::estimate(&img, &Hints::default()).unwrap();
         assert!((paper.global[0] - 72.0).abs() < 1e-9, "{:?}", paper.global);
         assert!(!paper.content[0] && !paper.content[5 * w + 50] && paper.content[45 * w + 60]);
+    }
+
+    #[test]
+    fn ink_grid_touching_the_border_is_not_a_bed() {
+        // Ink lines along the border and every 20 px: the border colour is ink
+        let (w, h) = (120, 90);
+        let data = (0..w * h)
+            .map(|i| if (i % w) % 20 < 2 || (i / w) % 20 < 2 { [20.0, 0.0, 2.0] } else { [72.0, 1.0, 16.0] })
+            .collect();
+        let img = LabImage { width: w, height: h, data };
+        assert!(content_mask(&img).0.iter().all(|&c| c));
     }
 
     #[test]

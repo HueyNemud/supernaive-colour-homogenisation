@@ -11,7 +11,7 @@ use gdal::{Dataset, DriverManager};
 use homog::background::Lighting;
 use homog::color::{linear_rgb_to_lab, linear_to_srgb, srgb_to_linear, Vec3};
 use homog::hints::Hints;
-use homog::io::{Format, OutputOptions};
+use homog::io::OutputOptions;
 use homog::{process_file, Options};
 
 fn options(lighting: Lighting, hints: Hints) -> Options {
@@ -20,7 +20,7 @@ fn options(lighting: Lighting, hints: Hints) -> Options {
         lighting,
         use_icc: true,
         hints,
-        output: OutputOptions { format: Format::Tif, jpeg_quality: 95, tiff_compress: "NONE".into() },
+        output: OutputOptions { jpeg_quality: 95, tiff_compress: "NONE".into() },
         debug: None,
     }
 }
@@ -135,7 +135,7 @@ fn paper_l_range(lab: &[Vec3]) -> (f64, f64) {
 
 #[test]
 fn flat_field_whitens_the_whole_sheet() {
-    let (lab, ds) = run(Lighting::Auto);
+    let (lab, ds) = run(Lighting::Normal);
     let (lo, hi) = paper_l_range(&lab);
     assert!(lo > 97.0 && hi <= 100.0 + 1e-6, "paper L* in [{lo:.2}, {hi:.2}]");
 
@@ -234,7 +234,7 @@ mod seams {
         let seams = atlas.seams("west.tif").unwrap();
         assert_eq!(seams.1.len(), 1, "one shared edge");
 
-        let opts = |out: &str| (dir.join(out), options(Lighting::Auto, Hints::default()));
+        let opts = |out: &str| (dir.join(out), options(Lighting::Normal, Hints::default()));
         let (plain, o1) = opts("plain.tif");
         let (seamed, o2) = opts("seamed.tif");
         process_file(&west, &plain, &o1, None).unwrap();
@@ -281,7 +281,7 @@ mod hints {
         let dir = temp_dir(name);
         let (input, output) = (dir.join("in.tif"), dir.join("out.tif"));
         write_rgb8(&input, SW, SH, sheet);
-        process_file(&input, &output, &options(Lighting::Auto, hints), None).unwrap();
+        process_file(&input, &output, &options(Lighting::Normal, hints), None).unwrap();
         let (w, lab) = read_lab8(&output);
         let mean = |pred: &dyn Fn(usize, usize) -> bool| {
             let sel: Vec<&Vec3> = lab
@@ -337,7 +337,7 @@ mod hints {
                 lab_to_linear([97.0, 0.0, 0.0]) // scanner bed
             }
         });
-        process_file(&input, &output, &options(Lighting::Auto, Hints::default()), None).unwrap();
+        process_file(&input, &output, &options(Lighting::Normal, Hints::default()), None).unwrap();
         let (w, lab) = read_lab8(&output);
         let p = lab[150 * w + 200];
         assert!(p[0] > 98.0 && p[1].hypot(p[2]) < 1.0, "paper {p:?}");

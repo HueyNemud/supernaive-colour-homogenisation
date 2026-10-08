@@ -6,8 +6,7 @@
 //!   pixels in the paper fit (green = bare paper, orange = lightness only, grey = ignored,
 //!   dark red = outside the sheet), corrected result;
 //! - `calibrate.txt`: paper colour of the batch and, per sheet, its paper colour, the share
-//!   of bare paper found, the surface degree and warnings (paper far from the batch, little
-//!   bare paper found);
+//!   of bare paper found and warnings (paper far from the batch, little bare paper found);
 //! - `homog.toml`: proposed configuration.
 
 use std::fmt::Write as _;
@@ -29,7 +28,6 @@ const GAP: usize = 6;
 pub struct SheetReport {
     pub name: String,
     pub paper: Vec3,
-    pub degree: Option<usize>,
     pub paper_fraction: f64,
     pub seam_edges: usize,
     row: (usize, usize, Vec<[u8; 3]>),
@@ -84,7 +82,6 @@ pub fn calibrate_sheet(input: &Path, opts: &Options, seams: Option<&Seams>) -> R
     Ok(SheetReport {
         name: input.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
         paper: a.paper.global,
-        degree: a.surface.degree,
         paper_fraction: a.paper_fraction(),
         seam_edges: a.seams.as_ref().map_or(0, |s| s.edges()),
         row: hstack(&tiles, ROW_HEIGHT),
@@ -94,6 +91,7 @@ pub fn calibrate_sheet(input: &Path, opts: &Options, seams: Option<&Seams>) -> R
 /// Settings echoed in the proposed `homog.toml`.
 pub struct Proposal {
     pub target: [u8; 3],
+    pub lighting: String,
     pub icc: bool,
     pub gcp_dir: Option<PathBuf>,
     pub paper_hints: Option<PathBuf>,
@@ -124,7 +122,7 @@ pub fn write(dir: &Path, sheets: &[SheetReport], proposal: &Proposal) -> Result<
     let mut txt = String::new();
     writeln!(txt, "{} sheet(s); batch paper colour (CIELAB): ({:.1}, {:.1}, {:.1})", sheets.len(), batch[0], batch[1], batch[2])?;
     writeln!(txt, "Rows of contact_sheet.png in this order: original | pixels used as paper | result.\n")?;
-    writeln!(txt, "{:>4}  {:<44} {:>22} {:>8} {:>7} {:>7} {:>6}  warnings", "row", "sheet", "paper Lab", "ΔE batch", "paper", "degree", "seams")?;
+    writeln!(txt, "{:>4}  {:<44} {:>22} {:>8} {:>7} {:>6}  warnings", "row", "sheet", "paper Lab", "ΔE batch", "paper", "seams")?;
     let mut flagged = 0;
     for (k, s) in sheets.iter().enumerate() {
         let de = ((s.paper[0] - batch[0]).powi(2) + (s.paper[1] - batch[1]).powi(2) + (s.paper[2] - batch[2]).powi(2)).sqrt();
@@ -138,13 +136,12 @@ pub fn write(dir: &Path, sheets: &[SheetReport], proposal: &Proposal) -> Result<
         flagged += usize::from(!warnings.is_empty());
         writeln!(
             txt,
-            "{:>4}  {:<44} {:>22} {:>8.1} {:>6.0}% {:>7} {:>6}  {}",
+            "{:>4}  {:<44} {:>22} {:>8.1} {:>6.0}% {:>6}  {}",
             k + 1,
             s.name,
             format!("({:.1}, {:.1}, {:.1})", s.paper[0], s.paper[1], s.paper[2]),
             de,
             s.paper_fraction * 100.0,
-            s.degree.map_or("-".into(), |d| d.to_string()),
             s.seam_edges,
             warnings.join("; ")
         )?;
@@ -167,11 +164,7 @@ pub fn write(dir: &Path, sheets: &[SheetReport], proposal: &Proposal) -> Result<
     writeln!(toml, "# Proposed by `homog calibrate` on {} sheet(s). See calibrate.txt and contact_sheet.png.", sheets.len())?;
     writeln!(toml, "# Batch paper colour (CIELAB): ({:.1}, {:.1}, {:.1})", batch[0], batch[1], batch[2])?;
     writeln!(toml, "target = [{}, {}, {}]", proposal.target[0], proposal.target[1], proposal.target[2])?;
-    let mut hist = std::collections::BTreeMap::new();
-    sheets.iter().filter_map(|s| s.degree).for_each(|d| *hist.entry(d).or_insert(0) += 1);
-    let hist: Vec<String> = hist.iter().map(|(d, n)| format!("degree {d}: {n}")).collect();
-    writeln!(toml, "# Paper surface degrees chosen: {}", if hist.is_empty() { "none".into() } else { hist.join(", ") })?;
-    writeln!(toml, "lighting = \"auto\"   # auto | even | uneven | none")?;
+    writeln!(toml, "lighting = \"{}\"   # even | normal | uneven | none", proposal.lighting)?;
     writeln!(toml, "icc = {}", proposal.icc)?;
     writeln!(toml, "\n[hints]")?;
     writeln!(toml, "# Imagettes: crops of the scans (at least 10 x 10 px), one example per image file.")?;
