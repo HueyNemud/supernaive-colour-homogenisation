@@ -1,7 +1,5 @@
 # How Not-So-Naive Map Colour Homogenisation works
 
-*Technical report: making the paper of scanned map sheets white and seamless, without bleaching the colours drawn on it*
-
 `homog` takes scans of old map sheets and makes their paper white, evenly across each sheet and
 across sheets, while keeping inks and watercolour washes as they were drawn. This report explains
 how. Each section opens with a plain-language summary (in a quote block) and then gives the model,
