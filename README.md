@@ -1,7 +1,5 @@
 # Not-So-Naive Map Colour Homogenisation
 
-*Old maps were drawn on white paper. Time, light and scanners disagree. `homog` settles the argument.*
-
 [![Licence: AGPL v3](https://img.shields.io/badge/licence-AGPL%20v3-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-%E2%89%A5%201.85-orange.svg)](https://www.rust-lang.org)
 [![GDAL](https://img.shields.io/badge/GDAL-3.x-green.svg)](https://gdal.org)
