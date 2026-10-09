@@ -1,7 +1,5 @@
 # How Not-So-Naive Map Colour Homogenisation works
 
-*Technical report: making the paper of scanned map sheets white and seamless, without bleaching the colours drawn on it*
-
 `homog` takes scans of old map sheets and makes their paper white, evenly across each sheet and
 across sheets, while keeping inks and watercolour washes as they were drawn. This report explains
 how. Each section opens with a plain-language summary (in a quote block) and then gives the model,
@@ -143,9 +141,9 @@ chroma ([`auto_paper`](../src/background.rs)). The paper colour $`\mathbf{p}`$ i
 $`\sigma_{L}`$,
 
 ```math
-\sigma_{ab} = \max\!\left(\sigma_{\min},\ \frac{\operatorname{median}_i \lVert (a_i, b_i) - (\mu_a, \mu_b) \rVert}{1.1774}\right),
+$$\sigma_{ab} = \max\!\left(\sigma_{\min},\ \frac{\mathrm{median}_i \lVert (a_i, b_i) - (\mu_a, \mu_b) \rVert}{1.1774}\right),
 \qquad
-\sigma_{L} = 1.4826\ \operatorname{median}_i \lvert L_i - \mu_L \rvert
+\sigma_{L} = 1.4826\ \mathrm{median}_i \lvert L_i - \mu_L \rvert$$
 ```
 
 (1.1774 is the median distance to the centre of a 2-D normal distribution, in standard deviations;
@@ -242,8 +240,7 @@ Bradford cone space [[Lam 1985](#ref-lam)]. For a pixel of linear sRGB $`\mathbf
 $`\mathbf{p}(x, y)`$ the paper surface converted to XYZ:
 
 ```math
-\mathbf{c}' = M^{-1}\, \operatorname{diag}\!\left(\frac{M_B\, \mathbf{t}_{XYZ}}{M_B\, \mathbf{p}_{XYZ}(x, y)}\right) M\, \mathbf{c},
-\qquad M = M_B\, M_{\mathrm{sRGB} \to \mathrm{XYZ}}
+$$\mathbf{c}' = M^{-1}\, \mathrm{diag}\!\left(\frac{M_B\, \mathbf{t}_{XYZ}}{M_B\, \mathbf{p}_{XYZ}(x, y)}\right) M\, \mathbf{c},\qquad M = M_B\, M_{\mathrm{sRGB} \to \mathrm{XYZ}}$$
 ```
 
 ([`src/transform.rs`](../src/transform.rs)). Properties:
@@ -287,7 +284,7 @@ within $`\max(4,\ 2\sigma_{ab})`$ of the target, its lightness above $`L_t - 20`
 the gain bringing their median to the target is
 
 ```math
-\mathbf{g}_k = \log \frac{M_B\, \mathbf{t}_{XYZ}}{\operatorname{median}_{i \in k} \mathbf{lms}_i}
+\mathbf{g}_k = \log \frac{M_B\, \mathbf{t}_{XYZ}}{\mathrm{median}_{i \in k} \mathbf{lms}_i}
 ```
 
 Segments without paper are interpolated, then the profile is smoothed (moving average over 3 segments).
